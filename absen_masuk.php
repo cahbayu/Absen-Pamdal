@@ -1,5 +1,6 @@
 <?php
 require_once 'config.php';
+require_once 'functions.php';
 requireLogin();
 
 if (!hasRole(ROLE_USER)) {
@@ -540,7 +541,7 @@ $semua_pamdal = getAllUsersForDropdown($user_id);
                 <?php endforeach; ?>
             </div>
 
-            <!-- Info keterlambatan -->
+            <!-- Info keterlambatan — hanya info, tidak memblokir -->
             <div class="info-telat" id="info-telat">
                 <i class="fas fa-exclamation-triangle"></i>
                 <div id="info-telat-text"></div>
@@ -680,8 +681,8 @@ $semua_pamdal = getAllUsersForDropdown($user_id);
 
         <p style="text-align:center; font-size:12px; color:var(--text-muted); margin-top:14px;">
             <i class="fas fa-info-circle" style="margin-right:4px;"></i>
-            Toleransi keterlambatan maksimal
-            <strong style="color:var(--amber);">15 menit</strong> dari jam masuk shift.
+            Absen masuk tetap bisa dilakukan meski terlambat,
+            dengan keterangan <strong style="color:var(--amber);">terlambat</strong>.
         </p>
 
     </form>
@@ -711,12 +712,11 @@ const t = setInterval(() => {
 }, 1000);
 <?php endif; ?>
 
-/* ── Cek Keterlambatan ───────────────────────────────────── */
+/* ── Cek Keterlambatan — hanya info, tidak memblokir submit ─ */
 function cekTelat() {
     const checked = document.querySelector('.shift-option:checked');
     const box     = document.getElementById('info-telat');
     const txt     = document.getElementById('info-telat-text');
-    const btn     = document.getElementById('btn-submit');
     if (!box) return;
 
     if (!checked) { box.classList.remove('show'); return; }
@@ -729,19 +729,18 @@ function cekTelat() {
     const menit  = Math.floor((now - jadwal) / 60000);
 
     if (menit <= 0) {
-        // Belum waktunya atau tepat waktu
+        // Tepat waktu atau belum waktunya
         box.classList.remove('show');
-        if (btn) btn.disabled = false;
-    } else if (menit <= 15) {
-        box.classList.add('show');
-        Object.assign(box.style, { background:'var(--amber-dim)', borderColor:'rgba(245,158,11,0.3)', color:'var(--amber)' });
-        txt.innerHTML = `Anda <strong>terlambat ${menit} menit</strong>. Masih dalam toleransi 15 menit — absen tetap bisa dilakukan.`;
-        if (btn) btn.disabled = false;
     } else {
+        // Terlambat — tampilkan info tapi JANGAN disable tombol
         box.classList.add('show');
-        Object.assign(box.style, { background:'var(--red-dim)', borderColor:'rgba(244,63,94,0.3)', color:'var(--red)' });
-        txt.innerHTML = `Anda <strong>terlambat ${menit} menit</strong>. Melebihi toleransi 15 menit — absen masuk <strong>tidak dapat dilakukan</strong>.`;
-        if (btn) btn.disabled = true;
+        Object.assign(box.style, {
+            background: 'var(--amber-dim)',
+            borderColor: 'rgba(245,158,11,0.3)',
+            color: 'var(--amber)'
+        });
+        txt.innerHTML = `Anda <strong>terlambat ${menit} menit</strong>. `
+            + `Absen tetap bisa dilakukan dengan keterangan <strong>terlambat</strong>.`;
     }
 }
 
@@ -784,11 +783,19 @@ if (formAbsen) {
         const statusTeks = statusVal === 'tidak_sesuai' ? 'Tidak Sesuai Jadwal (Penukaran)' : 'Sesuai Jadwal';
         const clock      = document.getElementById('live-clock')?.textContent || '';
 
+        // Cek apakah terlambat untuk ditampilkan di konfirmasi
+        const [jh, jm]  = (shiftEl.dataset.jamMasuk || '').split(':').map(Number);
+        const now        = new Date();
+        const jadwal     = new Date(now.getFullYear(), now.getMonth(), now.getDate(), jh, jm, 0);
+        const menit      = Math.floor((now - jadwal) / 60000);
+        const telatInfo  = menit > 0 ? `\nKeterangan: Terlambat ${menit} menit` : '';
+
         const ok = confirm(
             'Konfirmasi Absen Masuk\n\n' +
             'Shift   : ' + shiftNama + '\n' +
             'Status  : ' + statusTeks + '\n' +
-            'Waktu   : ' + clock + '\n\n' +
+            'Waktu   : ' + clock +
+            telatInfo + '\n\n' +
             'Pastikan data sudah benar sebelum melanjutkan.'
         );
         if (!ok) e.preventDefault();
