@@ -1,33 +1,25 @@
 <?php
-// index.php - Halaman Stok Barang ATK (Dengan Role-Based Access Control)
+// index_nonatk.php - Halaman Stok Barang Non-ATK
 require_once 'config.php';
 require_once 'function.php';
 
 // Cek apakah user sudah login
 requireLogin();
 
-// Ambil data user dari session TERLEBIH DAHULU sebelum validasi
-$user_name = $_SESSION['name'];
+// Cek permission - Super Admin, Admin, dan User bisa akses halaman Non-ATK
+if(!canRead('non_atk')) {
+    setNotification("Anda tidak memiliki akses ke halaman ini!", "danger");
+    header('location:dashboard.php');
+    exit();
+}
+
+// Ambil data user dari session
+$user_name  = $_SESSION['name'];
 $user_email = $_SESSION['email'];
-$user_role = $_SESSION['role'];
+$user_role  = $_SESSION['role'];
 
-// VALIDASI AKSES HALAMAN ATK
-// Admin TIDAK BOLEH akses halaman ATK (hanya boleh akses Non-ATK)
-if($user_role === ROLE_ADMIN) {
-    $_SESSION['error_message'] = "Anda tidak memiliki akses ke halaman Stok Barang ATK! Admin hanya dapat mengakses halaman Non-ATK.";
-    header("Location: index_nonatk.php");
-    exit();
-}
-
-// Hanya Super Admin dan User yang boleh akses halaman ini
-if(!canRead('atk')) {
-    $_SESSION['error_message'] = "Anda tidak memiliki akses ke halaman ini!";
-    header("Location: dashboard.php");
-    exit();
-}
-
-// Gunakan fungsi filter dari function.php
-$ambilsemuadatastock = getFilteredStockData($conn, 'atk');
+// Gunakan fungsi filter dari function.php untuk NON-ATK
+$ambilsemuadatastock = getFilteredStockData($conn, 'non_atk');
 
 // Hitung jumlah data hasil filter
 $jumlah_data = mysqli_num_rows($ambilsemuadatastock);
@@ -46,7 +38,7 @@ if(isset($_GET['tanggal_sampai']) && $_GET['tanggal_sampai'] != ''){
 if(isset($_GET['search']) && $_GET['search'] != ''){
     $export_params[] = 'search=' . urlencode($_GET['search']);
 }
-$export_link = 'export.php' . (count($export_params) > 0 ? '?' . implode('&', $export_params) : '');
+$export_link = 'export_nonatk.php' . (count($export_params) > 0 ? '?' . implode('&', $export_params) : '');
 
 // Ambil notifikasi jika ada
 $notification = getNotification();
@@ -60,13 +52,13 @@ $notification = getNotification();
         <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no" />
         <meta name="description" content="" />
         <meta name="author" content="" />
-        <title>Stok Barang ATK - SELARAS</title>
+        <title>Stok Barang Non-ATK - SELARAS</title>
         <link href="css/styles.css" rel="stylesheet" />
         <link href="https://cdn.datatables.net/1.10.20/css/dataTables.bootstrap4.min.css" rel="stylesheet" crossorigin="anonymous" />
         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css">
         <script src="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.1/js/all.min.js" crossorigin="anonymous"></script>
         <style>
-/* ===== CSS LENGKAP SELARAS - GLASS MORPHISM & MODERN ANIMATIONS ===== */
+/* ===== CSS LENGKAP SELARAS - GLASS MORPHISM & MODERN ANIMATIONS WITH DARK MODE ===== */
 
 * {
     margin: 0;
@@ -111,9 +103,7 @@ body {
     padding: 0.75rem 1.5rem;
     z-index: 1040;
     position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
+    top: 0; left: 0; right: 0;
     display: flex !important;
     flex-wrap: nowrap;
     align-items: center;
@@ -188,8 +178,7 @@ body {
     color: #1e40af !important;
     background: rgba(59, 130, 246, 0.15);
     border-radius: 50%;
-    width: 40px;
-    height: 40px;
+    width: 40px; height: 40px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -279,10 +268,8 @@ body {
 .theme-slider:before {
     position: absolute;
     content: "";
-    height: 20px;
-    width: 20px;
-    left: 3px;
-    bottom: 3px;
+    height: 20px; width: 20px;
+    left: 3px; bottom: 3px;
     background: white;
     transition: 0.4s;
     border-radius: 50%;
@@ -327,10 +314,8 @@ body {
 .sb-sidenav-dark .sb-sidenav-menu .nav-link::before {
     content: '';
     position: absolute;
-    top: 0;
-    left: -100%;
-    width: 100%;
-    height: 100%;
+    top: 0; left: -100%;
+    width: 100%; height: 100%;
     background: linear-gradient(90deg, transparent, rgba(59, 130, 246, 0.15), transparent);
     transition: left 0.5s ease;
 }
@@ -470,21 +455,6 @@ h1 {
 .close:hover { opacity: 1; }
 
 /* ===== TABLE ===== */
-.table-container {
-    background: rgba(255, 255, 255, 0.35);
-    backdrop-filter: blur(20px) saturate(180%);
-    -webkit-backdrop-filter: blur(20px) saturate(180%);
-    border: 1px solid rgba(255, 255, 255, 0.3);
-    border-radius: 16px;
-    padding: 2rem;
-    margin-top: 2rem;
-    box-shadow: 0 8px 32px rgba(59, 130, 246, 0.1);
-    animation: slideUp 0.6s ease-out 0.3s both;
-}
-
-.table-title { font-size: 1.35rem; font-weight: 700; color: var(--text-primary); margin-bottom: 1.75rem; display: flex; align-items: center; gap: 0.75rem; }
-.table-title i { color: #2563eb; font-size: 1.5rem; }
-
 .table-responsive { margin-top: 1rem; overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .table { margin: 0; width: 100%; min-width: max-content; }
 
@@ -503,7 +473,6 @@ h1 {
 
 .table tbody tr { border-bottom: 1px solid var(--border-color); transition: all 0.3s ease; }
 .table tbody tr:hover { background: rgba(59, 130, 246, 0.08); box-shadow: 0 4px 12px rgba(59, 130, 246, 0.15); }
-
 .table tbody td { padding: 0.75rem 0.5rem; font-size: 0.8rem; color: var(--text-primary); vertical-align: middle; white-space: nowrap; }
 .table tbody td a { color: var(--accent-blue); text-decoration: none; font-weight: 500; transition: all 0.2s; }
 .table tbody td a:hover { text-decoration: underline; color: #2563eb; }
@@ -548,7 +517,6 @@ h1 {
 
 /* ===== FORMS ===== */
 .form-group { margin-bottom: 1.25rem; }
-
 .form-group label { font-weight: 500; font-size: 0.875rem; color: var(--text-primary); margin-bottom: 0.5rem; display: block; }
 
 .form-control {
@@ -563,8 +531,29 @@ h1 {
     background-color: white;
 }
 
-select.form-control { cursor: pointer; background-color: white; }
-select.form-control option { padding: 0.75rem 1rem; background: white; color: var(--text-primary); font-size: 0.875rem; line-height: 1.5; }
+/* ===== FIX: SELECT DROPDOWN ===== */
+select.form-control {
+    padding-right: 2.5rem;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%236c757d' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 1rem center;
+    background-size: 12px 12px;
+    cursor: pointer;
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+}
+
+select.form-control::-ms-expand { display: none; }
+
+select.form-control option {
+    padding: 0.75rem 1rem;
+    background: white;
+    color: var(--text-primary);
+    font-size: 0.875rem;
+    line-height: 1.5;
+}
+
 .form-control:focus { border-color: var(--accent-blue); box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1); outline: none; }
 textarea.form-control { min-height: 80px; resize: vertical; }
 input[type="number"].form-control { padding-right: 1rem; }
@@ -598,6 +587,20 @@ footer .text-muted { color: var(--text-secondary) !important; font-size: 0.875re
 .dataTables_wrapper .dataTables_paginate .paginate_button:hover { background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color: white !important; border-color: transparent; }
 .dataTables_wrapper .dataTables_paginate .paginate_button.current { background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%) !important; color: white !important; border-color: transparent !important; }
 
+/* ===== FILTER FORM ===== */
+.filter-container { background: #f8f9fa; padding: 1.5rem; border-radius: 8px; border: 1px solid #e9ecef; }
+.filter-container h6 { margin-bottom: 1rem; font-weight: 600; color: #1a1a1a; }
+#filterForm .form-group { margin-bottom: 0; }
+#filterForm label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 0.875rem; font-weight: 500; margin-bottom: 0.5rem; color: #2d3748; }
+#filterForm .form-control { height: 42px; min-height: 42px; }
+#filterForm select.form-control {
+    padding-right: 2.5rem;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%236c757d' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 1rem center;
+    background-size: 12px 12px;
+}
+
 /* ===== DARK MODE ===== */
 body.dark-mode { background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #334155 100%); color: #e2e8f0; }
 body.dark-mode .sb-topnav { background: rgba(15, 23, 42, 0.8) !important; border: 1px solid rgba(71, 85, 105, 0.3); }
@@ -628,9 +631,15 @@ body.dark-mode .modal-content { background: rgba(30, 41, 59, 0.95); border: 1px 
 body.dark-mode .modal-header { background: rgba(15, 23, 42, 0.8); border-bottom: 1px solid rgba(71, 85, 105, 0.3); }
 body.dark-mode .modal-title { color: #e2e8f0; }
 body.dark-mode .form-group label { color: #e2e8f0; }
-body.dark-mode .form-control { background: rgba(30, 41, 59, 0.9) !important; border: 1px solid rgba(71, 85, 105, 0.5); color: #e2e8f0 !important; }
-body.dark-mode .form-control:focus { background: rgba(30, 41, 59, 0.95) !important; border-color: #3b82f6; }
-body.dark-mode select.form-control { background: rgba(30, 41, 59, 0.9) !important; color: #e2e8f0 !important; }
+body.dark-mode .form-control { background: rgba(30, 41, 59, 0.8); border: 1px solid rgba(71, 85, 105, 0.5); color: #e2e8f0; }
+body.dark-mode .form-control:focus { background: rgba(30, 41, 59, 0.9); border-color: #3b82f6; }
+body.dark-mode select.form-control {
+    background-color: rgba(30, 41, 59, 0.8);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2394a3b8' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 1rem center;
+    background-size: 12px 12px;
+}
 body.dark-mode select.form-control option { background: #1e293b; color: #e2e8f0; }
 body.dark-mode .form-control::placeholder { color: #94a3b8; opacity: 1; }
 body.dark-mode footer { background: rgba(15, 23, 42, 0.8) !important; border-top: 1px solid rgba(71, 85, 105, 0.3); }
@@ -641,6 +650,16 @@ body.dark-mode .dataTables_wrapper .dataTables_filter input { background: rgba(3
 body.dark-mode .dataTables_wrapper .dataTables_filter input:focus { background: rgba(30, 41, 59, 0.9); border-color: #3b82f6; }
 body.dark-mode .dataTables_wrapper .dataTables_info,
 body.dark-mode .dataTables_wrapper .dataTables_length label { color: #e2e8f0; }
+body.dark-mode .filter-container { background: rgba(30, 41, 59, 0.6); border: 1px solid rgba(71, 85, 105, 0.5); }
+body.dark-mode .filter-container h6 { color: #e2e8f0; }
+body.dark-mode #filterForm label { color: #e2e8f0; }
+body.dark-mode #filterForm select.form-control {
+    background-color: rgba(30, 41, 59, 0.8);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2394a3b8' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 1rem center;
+    background-size: 12px 12px;
+}
 
 /* ===== RESPONSIVE ===== */
 @media (max-width: 768px) {
@@ -663,18 +682,6 @@ body.dark-mode .dataTables_wrapper .dataTables_length label { color: #e2e8f0; }
     .container-fluid { padding: 1rem; }
     h1 { font-size: 1.5rem; }
 }
-
-/* ===== FILTER FORM ===== */
-.filter-container { background: #f8f9fa; padding: 1.5rem; border-radius: 8px; border: 1px solid #e9ecef; }
-.filter-container h6 { margin-bottom: 1rem; font-weight: 600; color: #1a1a1a; }
-#filterForm .form-group { margin-bottom: 0; }
-#filterForm label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 0.875rem; font-weight: 500; margin-bottom: 0.5rem; color: #2d3748; }
-#filterForm .form-control { height: 42px; min-height: 42px; }
-#filterForm select.form-control { padding-right: 2.5rem; }
-
-body.dark-mode .filter-container { background: rgba(30, 41, 59, 0.6); border: 1px solid rgba(71, 85, 105, 0.5); }
-body.dark-mode .filter-container h6 { color: #e2e8f0; }
-body.dark-mode #filterForm label { color: #e2e8f0; }
 
 /* ===== SCROLLBAR ===== */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
@@ -753,7 +760,7 @@ body.dark-mode ::-webkit-scrollbar-thumb { background: linear-gradient(135deg, #
                                  aria-labelledby="headingStock"
                                  data-parent="#sidenavAccordion">
                                 <nav class="sb-sidenav-menu-nested nav">
-                                    <?php if($user_role !== ROLE_ADMIN): ?>
+                                    <?php if($user_role === ROLE_SUPER_ADMIN || $user_role === ROLE_USER): ?>
                                     <a class="nav-link <?php echo (basename($_SERVER['PHP_SELF']) == 'index.php') ? 'active' : ''; ?>" href="index.php">
                                         <div class="sb-nav-link-icon"><i class="bi bi-file-text"></i></div>
                                         Stok Barang ATK
@@ -766,8 +773,8 @@ body.dark-mode ::-webkit-scrollbar-thumb { background: linear-gradient(135deg, #
                                 </nav>
                             </div>
 
-                            <!-- Pemrosesan ATK - Hanya Super Admin dan User -->
-                            <?php if($user_role !== ROLE_ADMIN): ?>
+                            <!-- Pemrosesan ATK -->
+                            <?php if($user_role === ROLE_SUPER_ADMIN || $user_role === ROLE_USER): ?>
                             <a class="nav-link collapsed" href="#" data-toggle="collapse" data-target="#collapseATK" aria-expanded="false" aria-controls="collapseATK">
                                 <div class="sb-nav-link-icon"><i class="bi bi-gear-fill"></i></div>
                                 Pemrosesan ATK
@@ -819,12 +826,7 @@ body.dark-mode ::-webkit-scrollbar-thumb { background: linear-gradient(135deg, #
             <div id="layoutSidenav_content">
                 <main>
                     <div class="container-fluid">
-                        <h1>
-                            <i class="bi bi-box-seam"></i> Stok Barang ATK
-                            <?php if($user_role === ROLE_USER): ?>
-                                <span class="badge badge-info" style="font-size: 0.6em; vertical-align: middle;">Read Only</span>
-                            <?php endif; ?>
-                        </h1>
+                        <h1><i class="bi bi-box-seam"></i> Stok Barang Non-ATK</h1>
 
                         <!-- Notifikasi -->
                         <?php if($notification): ?>
@@ -836,7 +838,7 @@ body.dark-mode ::-webkit-scrollbar-thumb { background: linear-gradient(135deg, #
 
                         <div class="card mb-4">
                             <div class="card-header">
-                                <?php if(canCreate('atk')): ?>
+                                <?php if(canCreate('non_atk')): ?>
                                 <button type="button" class="btn btn-primary" data-toggle="modal" data-target="#myModal">
                                     <i class="bi bi-plus-circle"></i> Tambah Barang
                                 </button>
@@ -890,7 +892,7 @@ body.dark-mode ::-webkit-scrollbar-thumb { background: linear-gradient(135deg, #
                                                         <button type="submit" class="btn btn-primary btn-sm">
                                                             <i class="bi bi-search"></i> Terapkan Filter
                                                         </button>
-                                                        <a href="index.php" class="btn btn-secondary btn-sm">
+                                                        <a href="index_nonatk.php" class="btn btn-secondary btn-sm">
                                                             <i class="bi bi-arrow-clockwise"></i> Reset Filter
                                                         </a>
                                                     </div>
@@ -901,8 +903,8 @@ body.dark-mode ::-webkit-scrollbar-thumb { background: linear-gradient(135deg, #
                                 </div>
 
                                 <?php
-                                // Alert stok habis
-                                $ambildatastock = mysqli_query($conn, "
+                                // Alert stok habis Non-ATK
+                                $ambildatastock_alert = mysqli_query($conn, "
                                     SELECT
                                         s.idbarang,
                                         s.namabarang,
@@ -910,13 +912,13 @@ body.dark-mode ::-webkit-scrollbar-thumb { background: linear-gradient(135deg, #
                                         COALESCE(SUM(m.qty), 0) as total_masuk,
                                         COALESCE(SUM(k.qty), 0) as total_keluar,
                                         (s.stock + COALESCE(SUM(m.qty), 0) - COALESCE(SUM(k.qty), 0)) as stock_akhir
-                                    FROM stok s
-                                    LEFT JOIN masuk m ON s.idbarang = m.idbarang
-                                    LEFT JOIN keluar k ON s.idbarang = k.idbarang
+                                    FROM stok_non_atk s
+                                    LEFT JOIN masuk_non_atk m ON s.idbarang = m.idbarang
+                                    LEFT JOIN keluar_non_atk k ON s.idbarang = k.idbarang
                                     GROUP BY s.idbarang, s.namabarang, s.stock
                                     HAVING stock_akhir < 1
                                 ");
-                                while($fetch = mysqli_fetch_array($ambildatastock)){
+                                while($fetch = mysqli_fetch_array($ambildatastock_alert)){
                                     $barang = $fetch['namabarang'];
                                 ?>
                                 <div class="alert alert-danger alert-dismissible">
@@ -954,7 +956,7 @@ body.dark-mode ::-webkit-scrollbar-thumb { background: linear-gradient(135deg, #
                                                 <th>Barang Keluar</th>
                                                 <th>Stock Akhir</th>
                                                 <th>Tanggal Input</th>
-                                                <?php if(canUpdate('atk') || canDelete('atk')): ?>
+                                                <?php if(canUpdate('non_atk') || canDelete('non_atk')): ?>
                                                 <th>Aksi</th>
                                                 <?php endif; ?>
                                             </tr>
@@ -963,23 +965,23 @@ body.dark-mode ::-webkit-scrollbar-thumb { background: linear-gradient(135deg, #
                                         <?php
                                         $i = 1;
                                         while($data = mysqli_fetch_array($ambilsemuadatastock)){
-                                            $idbarang       = $data['idbarang'];
-                                            $namabarang     = $data['namabarang'];
-                                            $deskripsi      = $data['deskripsi'];
-                                            $penyimpanan    = $data['penyimpanan'];
-                                            $stock_awal     = $data['stock_awal'];
-                                            $satuan         = $data['satuan'];
-                                            $tanggal_input  = $data['tanggal_input'];
-                                            $barang_masuk   = $data['total_masuk'];
-                                            $barang_keluar  = $data['total_keluar'];
-                                            $stock_akhir    = $stock_awal + $barang_masuk - $barang_keluar;
-                                            $idb            = $data['idbarang'];
+                                            $idbarang      = $data['idbarang'];
+                                            $namabarang    = $data['namabarang'];
+                                            $deskripsi     = $data['deskripsi'];
+                                            $penyimpanan   = $data['penyimpanan'];
+                                            $stock_awal    = $data['stock_awal'];
+                                            $satuan        = $data['satuan'];
+                                            $tanggal_input = $data['tanggal_input'];
+                                            $barang_masuk  = $data['total_masuk'];
+                                            $barang_keluar = $data['total_keluar'];
+                                            $stock_akhir   = $stock_awal + $barang_masuk - $barang_keluar;
+                                            $idb           = $data['idbarang'];
                                             $tanggal_formatted = date('d/m/Y', strtotime($tanggal_input));
                                         ?>
                                             <tr>
                                                 <td><?=$i++;?></td>
                                                 <td><?=$idbarang;?></td>
-                                                <td><strong><a href="detail.php?id=<?=$idb;?>"><?=$namabarang;?></a></strong></td>
+                                                <td><strong><a href="detail_nonatk.php?id=<?=$idb;?>"><?=$namabarang;?></a></strong></td>
                                                 <td><?=$deskripsi;?></td>
                                                 <td><span class="badge badge-primary"><?=$penyimpanan;?></span></td>
                                                 <td><span class="badge badge-success"><?=$stock_awal;?> <?=$satuan;?></span></td>
@@ -987,14 +989,14 @@ body.dark-mode ::-webkit-scrollbar-thumb { background: linear-gradient(135deg, #
                                                 <td><span class="badge badge-warning"><?=$barang_keluar;?> <?=$satuan;?></span></td>
                                                 <td><span class="badge badge-danger"><?=$stock_akhir;?> <?=$satuan;?></span></td>
                                                 <td><span class="badge badge-info"><?=$tanggal_formatted;?></span></td>
-                                                <?php if(canUpdate('atk') || canDelete('atk')): ?>
+                                                <?php if(canUpdate('non_atk') || canDelete('non_atk')): ?>
                                                 <td>
-                                                    <?php if(canUpdate('atk')): ?>
+                                                    <?php if(canUpdate('non_atk')): ?>
                                                     <button type="button" class="btn btn-warning btn-sm" data-toggle="modal" data-target="#edit<?=$idb;?>">
                                                         <i class="bi bi-pencil-square"></i>
                                                     </button>
                                                     <?php endif; ?>
-                                                    <?php if(canDelete('atk')): ?>
+                                                    <?php if(canDelete('non_atk')): ?>
                                                     <button type="button" class="btn btn-danger btn-sm" data-toggle="modal" data-target="#delate<?=$idb;?>">
                                                         <i class="bi bi-trash-fill"></i>
                                                     </button>
@@ -1013,7 +1015,7 @@ body.dark-mode ::-webkit-scrollbar-thumb { background: linear-gradient(135deg, #
 
                 <!-- ===== MODALS EDIT & DELETE ===== -->
                 <?php
-                if(canUpdate('atk') || canDelete('atk')):
+                if(canUpdate('non_atk') || canDelete('non_atk')):
                     mysqli_data_seek($ambilsemuadatastock, 0);
                     while($data = mysqli_fetch_array($ambilsemuadatastock)):
                         $idbarang      = $data['idbarang'];
@@ -1024,26 +1026,22 @@ body.dark-mode ::-webkit-scrollbar-thumb { background: linear-gradient(135deg, #
                         $satuan        = $data['satuan'];
                         $tanggal_input = $data['tanggal_input'];
                         $idb           = $data['idbarang'];
-                        $tanggal_formatted = date('d/m/Y', strtotime($tanggal_input));
+                        $tanggal_formatted  = date('d/m/Y', strtotime($tanggal_input));
                         // Format Y-m-d untuk input[type=date]
-                        $tanggal_input_ymd = date('Y-m-d', strtotime($tanggal_input));
+                        $tanggal_input_ymd  = date('Y-m-d', strtotime($tanggal_input));
                 ?>
 
                 <!-- Edit Modal -->
-                <?php if(canUpdate('atk')): ?>
+                <?php if(canUpdate('non_atk')): ?>
                 <div class="modal fade" id="edit<?=$idb;?>">
                     <div class="modal-dialog modal-lg">
                         <div class="modal-content">
                             <div class="modal-header">
-                                <h4 class="modal-title"><i class="bi bi-pencil-square"></i> Edit Barang</h4>
+                                <h4 class="modal-title"><i class="bi bi-pencil-square"></i> Edit Barang Non-ATK</h4>
                                 <button type="button" class="close" data-dismiss="modal">&times;</button>
                             </div>
                             <form method="post" enctype='multipart/form-data'>
                                 <div class="modal-body">
-                                    <div class="form-group">
-                                        <label>ID Barang</label>
-                                        <input type="text" name="idbarang" value="<?=$idbarang;?>" class="form-control" required>
-                                    </div>
                                     <div class="form-group">
                                         <label>Nama Barang</label>
                                         <input type="text" name="namabarang" value="<?=$namabarang;?>" class="form-control" required>
@@ -1088,7 +1086,7 @@ body.dark-mode ::-webkit-scrollbar-thumb { background: linear-gradient(135deg, #
                                         </small>
                                     </div>
                                     <input type="hidden" name="idb" value="<?=$idb;?>">
-                                    <button type="submit" class="btn btn-primary btn-block" name="update">
+                                    <button type="submit" class="btn btn-primary btn-block" name="update_nonatk">
                                         <i class="bi bi-check-circle"></i> Simpan Perubahan
                                     </button>
                                 </div>
@@ -1099,12 +1097,12 @@ body.dark-mode ::-webkit-scrollbar-thumb { background: linear-gradient(135deg, #
                 <?php endif; ?>
 
                 <!-- Delete Modal -->
-                <?php if(canDelete('atk')): ?>
+                <?php if(canDelete('non_atk')): ?>
                 <div class="modal fade" id="delate<?=$idb;?>">
                     <div class="modal-dialog">
                         <div class="modal-content">
                             <div class="modal-header">
-                                <h4 class="modal-title"><i class="bi bi-trash-fill"></i> Hapus Barang</h4>
+                                <h4 class="modal-title"><i class="bi bi-trash-fill"></i> Hapus Barang Non-ATK</h4>
                                 <button type="button" class="close" data-dismiss="modal">&times;</button>
                             </div>
                             <form method="post">
@@ -1114,7 +1112,7 @@ body.dark-mode ::-webkit-scrollbar-thumb { background: linear-gradient(135deg, #
                                         <small><i class="bi bi-exclamation-triangle"></i> Menghapus barang akan menghapus semua data transaksi masuk dan keluar terkait barang ini!</small>
                                     </div>
                                     <input type="hidden" name="idb" value="<?=$idb;?>">
-                                    <button type="submit" class="btn btn-danger btn-block" name="hapus">
+                                    <button type="submit" class="btn btn-danger btn-block" name="hapus_nonatk">
                                         <i class="bi bi-trash-fill"></i> Ya, Hapus Barang
                                     </button>
                                 </div>
@@ -1132,19 +1130,20 @@ body.dark-mode ::-webkit-scrollbar-thumb { background: linear-gradient(135deg, #
                 <footer class="py-4 bg-light mt-auto">
                     <div class="container-fluid">
                         <div class="d-flex align-items-center justify-content-between small">
-                        <div class="text-muted">Copyright &copy; 2025 Awal Cahyo &mdash; DPD RI Provinsi Kalimantan Barat</div>                        </div>
+                        <div class="text-muted">Copyright &copy; 2025 Awal Cahyo &mdash; DPD RI Provinsi Kalimantan Barat</div>
+                        </div>
                     </div>
                 </footer>
             </div>
         </div>
 
-        <!-- Add Modal - Hanya Super Admin -->
-        <?php if(canCreate('atk')): ?>
+        <!-- Add Modal -->
+        <?php if(canCreate('non_atk')): ?>
         <div class="modal fade" id="myModal">
             <div class="modal-dialog modal-lg">
                 <div class="modal-content">
                     <div class="modal-header">
-                        <h4 class="modal-title"><i class="bi bi-plus-circle"></i> Tambah Barang Baru</h4>
+                        <h4 class="modal-title"><i class="bi bi-plus-circle"></i> Tambah Barang Baru Non-ATK</h4>
                         <button type="button" class="close" data-dismiss="modal">&times;</button>
                     </div>
                     <form method="post" enctype="multipart/form-data">
@@ -1190,7 +1189,7 @@ body.dark-mode ::-webkit-scrollbar-thumb { background: linear-gradient(135deg, #
                                     <i class="bi bi-info-circle"></i> Default: Hari ini. Anda dapat mengubahnya sesuai kebutuhan.
                                 </small>
                             </div>
-                            <button type="submit" class="btn btn-primary btn-block" name="addnewbarang">
+                            <button type="submit" class="btn btn-primary btn-block" name="addnewbarang_nonatk">
                                 <i class="bi bi-check-circle"></i> Tambah Barang
                             </button>
                         </div>

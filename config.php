@@ -1,275 +1,201 @@
 <?php
 // config.php - Konfigurasi Database dan Security
-// Sistem Absensi Pamdal
 
-// =============================================
-// KONFIGURASI DATABASE
-// =============================================
+// Konfigurasi database
 define('DB_HOST', 'localhost');
 define('DB_USER', 'root');
 define('DB_PASS', '');
-define('DB_NAME', 'absen');
+define('DB_NAME', 'stokbarang2');
 
-// =============================================
-// KONFIGURASI ROLE
-// =============================================
-define('ROLE_KEPALA', 'kepala');
-define('ROLE_PAMDAL', 'pamdal');
+// Konfigurasi role/level akses
+define('ROLE_SUPER_ADMIN', 'super_admin');
+define('ROLE_ADMIN', 'admin');
+define('ROLE_USER', 'user');
 
-// =============================================
-// KONFIGURASI STATUS ABSENSI
-// =============================================
-define('STATUS_HADIR',       'hadir');
-define('STATUS_TIDAK_HADIR', 'tidak_hadir');
-
-// =============================================
-// KONFIGURASI STATUS LAPORAN
-// =============================================
-define('LAPORAN_DRAFT',   'draft');
-define('LAPORAN_PENDING', 'pending');
-define('LAPORAN_ACC',     'acc');
-define('LAPORAN_REVISI',  'revisi');
-
-// =============================================
-// KONEKSI DATABASE
-// =============================================
+// Membuat koneksi database
 function getConnection() {
     $conn = new mysqli(DB_HOST, DB_USER, DB_PASS, DB_NAME);
-
+    
+    // Cek koneksi
     if ($conn->connect_error) {
         die("Koneksi database gagal: " . $conn->connect_error);
     }
-
+    
+    // Set charset
     $conn->set_charset("utf8mb4");
+    
     return $conn;
 }
 
-// =============================================
-// FUNGSI INPUT & KEAMANAN
-// =============================================
+// Fungsi untuk membersihkan input
 function cleanInput($data) {
-    if ($data === null || $data === '') return '';
+    if ($data === null || $data === '') {
+        return '';
+    }
     $data = trim($data);
     $data = stripslashes($data);
     $data = htmlspecialchars($data);
     return $data;
 }
 
+// Fungsi untuk validasi email
+function isValidEmail($email) {
+    return filter_var($email, FILTER_VALIDATE_EMAIL);
+}
+
+// Fungsi untuk hash password
 function hashPassword($password) {
     return password_hash($password, PASSWORD_DEFAULT);
 }
 
+// Fungsi untuk verify password
 function verifyPassword($password, $hash) {
     return password_verify($password, $hash);
 }
 
-// =============================================
-// FUNGSI SESSION & AUTH
-// =============================================
+// Fungsi untuk cek apakah user sudah login
 function isLoggedIn() {
-    return isset($_SESSION['log']) && isset($_SESSION['role']);
+    return isset($_SESSION['user_id']) && isset($_SESSION['role']);
 }
 
+// Fungsi untuk cek role user
 function hasRole($role) {
     return isset($_SESSION['role']) && $_SESSION['role'] === $role;
 }
 
-function isKepala() {
-    return hasRole(ROLE_KEPALA);
-}
-
-function isPamdal() {
-    return hasRole(ROLE_PAMDAL);
-}
-
-// Fungsi untuk cek akses role (mendukung array atau string)
+// Fungsi untuk cek apakah user punya akses ke halaman tertentu
 function hasAccess($requiredRole) {
-    if (!isLoggedIn()) return false;
-
+    if (!isLoggedIn()) {
+        return false;
+    }
+    
     $userRole = $_SESSION['role'];
-
-    // Kepala punya akses ke semua
-    if ($userRole === ROLE_KEPALA) return true;
-
+    
+    // Super admin punya akses ke semua
+    if ($userRole === ROLE_SUPER_ADMIN) {
+        return true;
+    }
+    
+    // Cek role sesuai kebutuhan
     if (is_array($requiredRole)) {
         return in_array($userRole, $requiredRole);
     }
-
+    
     return $userRole === $requiredRole;
 }
 
-// =============================================
-// FUNGSI PROTEKSI HALAMAN
-// =============================================
+// Fungsi untuk redirect jika tidak punya akses
 function requireLogin() {
-    if (isset($_SESSION['log'])) {
-        // sudah login, lanjut
-    } else {
-        header('location:login.php');
+    if (!isLoggedIn()) {
+        header("Location: login.php");
         exit();
     }
 }
 
-function requireKepala() {
-    if (isset($_SESSION['log'])) {
-        if (!isKepala()) {
-            $_SESSION['error_message'] = "Anda tidak memiliki akses ke halaman ini!";
-            header("Location: dashboard.php");
-            exit();
-        }
-    } else {
-        header('location:login.php');
-        exit();
-    }
-}
-
-function requirePamdal() {
-    if (isset($_SESSION['log'])) {
-        if (!isPamdal()) {
-            $_SESSION['error_message'] = "Halaman ini hanya untuk pamdal.";
-            header("Location: dashboard.php");
-            exit();
-        }
-    } else {
-        header('location:login.php');
-        exit();
-    }
-}
-
-// Fungsi generik untuk require role tertentu (seperti SELARAS)
+// Fungsi untuk require role tertentu
 function requireRole($role) {
-    if (isset($_SESSION['log'])) {
-        if (!hasAccess($role)) {
-            $_SESSION['error_message'] = "Anda tidak memiliki akses ke halaman ini!";
-            header("Location: dashboard.php");
-            exit();
-        }
-    } else {
-        header('location:login.php');
+    requireLogin();
+    
+    if (!hasAccess($role)) {
+        $_SESSION['error_message'] = "Anda tidak memiliki akses ke halaman ini!";
+        header("Location: dashboard.php");
         exit();
     }
 }
 
-// =============================================
-// FUNGSI NAMA TAMPILAN
-// =============================================
+// Fungsi untuk mendapatkan nama role yang user-friendly
 function getRoleName($role) {
-    switch ($role) {
-        case ROLE_KEPALA: return 'Kepala Kantor';
-        case ROLE_PAMDAL: return 'Pamdal';
-        default:          return 'Unknown';
+    switch($role) {
+        case ROLE_SUPER_ADMIN:
+            return 'Super Admin';
+        case ROLE_ADMIN:
+            return 'Admin';
+        case ROLE_USER:
+            return 'User';
+        default:
+            return 'Unknown';
     }
 }
 
-function getStatusLaporanLabel($status) {
-    switch ($status) {
-        case LAPORAN_DRAFT:   return 'Draft';
-        case LAPORAN_PENDING: return 'Menunggu Review';
-        case LAPORAN_ACC:     return 'ACC';
-        case LAPORAN_REVISI:  return 'Perlu Revisi';
-        default:              return '-';
-    }
+// Fungsi untuk cek permission action (Create, Read, Update, Delete)
+function canCreate($section = 'all') {
+    if (!isLoggedIn()) return false;
+    
+    $role = $_SESSION['role'];
+    
+    // Super Admin bisa create semua
+    if ($role === ROLE_SUPER_ADMIN) return true;
+    
+    // Admin hanya bisa create di non-ATK
+    if ($role === ROLE_ADMIN && $section === 'non_atk') return true;
+    
+    // User tidak bisa create
+    return false;
 }
 
-// Fungsi untuk mendapatkan list role untuk dropdown (seperti SELARAS)
+function canUpdate($section = 'all') {
+    if (!isLoggedIn()) return false;
+    
+    $role = $_SESSION['role'];
+    
+    // Super Admin bisa update semua
+    if ($role === ROLE_SUPER_ADMIN) return true;
+    
+    // Admin hanya bisa update di non-ATK
+    if ($role === ROLE_ADMIN && $section === 'non_atk') return true;
+    
+    // User tidak bisa update
+    return false;
+}
+
+function canDelete($section = 'all') {
+    if (!isLoggedIn()) return false;
+    
+    $role = $_SESSION['role'];
+    
+    // Super Admin bisa delete semua
+    if ($role === ROLE_SUPER_ADMIN) return true;
+    
+    // Admin hanya bisa delete di non-ATK
+    if ($role === ROLE_ADMIN && $section === 'non_atk') return true;
+    
+    // User tidak bisa delete
+    return false;
+}
+
+function canRead($section = 'all') {
+    if (!isLoggedIn()) return false;
+    
+    // Semua role bisa read
+    // Tapi admin hanya bisa akses non-ATK
+    $role = $_SESSION['role'];
+    
+    if ($role === ROLE_SUPER_ADMIN || $role === ROLE_USER) {
+        return true;
+    }
+    
+    if ($role === ROLE_ADMIN && $section === 'non_atk') {
+        return true;
+    }
+    
+    return false;
+}
+
+// Fungsi untuk mendapatkan list role untuk dropdown
 function getRoleOptions() {
     return [
-        ROLE_KEPALA => 'Kepala Kantor',
-        ROLE_PAMDAL => 'Pamdal',
+        ROLE_SUPER_ADMIN => 'Super Admin',
+        ROLE_ADMIN => 'Admin',
+        ROLE_USER => 'User'
     ];
 }
 
-// =============================================
-// FUNGSI VALIDASI WAKTU (BACKEND)
-// =============================================
-
-/**
- * Cek apakah pamdal boleh mengisi laporan.
- * Syarat:
- * 1. Sudah absen masuk hari ini
- * 2. Belum absen keluar
- * 3. Waktu sekarang masih sebelum batas_laporan shift
- */
-function bolehIsiLaporan($user_id, $conn) {
-    $today    = date('Y-m-d');
-    $sekarang = date('H:i:s');
-
-    $sql = "SELECT a.id, a.waktu_keluar, s.batas_laporan, s.lintas_hari
-            FROM absensi a
-            JOIN shift s ON a.shift_id = s.id
-            WHERE a.user_id = ? AND a.tanggal = ? AND a.waktu_masuk IS NOT NULL
-            LIMIT 1";
-
-    $stmt = $conn->prepare($sql);
-    $stmt->bind_param("is", $user_id, $today);
-    $stmt->execute();
-    $result = $stmt->get_result();
-
-    if ($result->num_rows === 0) {
-        return ['boleh' => false, 'pesan' => 'Anda belum absen masuk hari ini.'];
-    }
-
-    $data = $result->fetch_assoc();
-
-    if (!empty($data['waktu_keluar'])) {
-        return ['boleh' => false, 'pesan' => 'Anda sudah absen keluar, laporan tidak bisa diubah.'];
-    }
-
-    if ($sekarang > $data['batas_laporan'] && $data['lintas_hari'] == 0) {
-        return ['boleh' => false, 'pesan' => 'Waktu pengisian laporan sudah habis.'];
-    }
-
-    return ['boleh' => true, 'absensi_id' => $data['id'], 'pesan' => ''];
-}
-
-/**
- * Cek apakah pamdal boleh absen masuk.
- */
-function bolehAbsenMasuk($user_id, $shift_id, $conn) {
-    $today = date('Y-m-d');
-
-    $sql  = "SELECT id FROM absensi 
-             WHERE user_id = ? AND shift_id = ? AND tanggal = ? LIMIT 1";
-    $stmt = $conn->prepare($sql);
-    $stmt->bind_param("iis", $user_id, $shift_id, $today);
-    $stmt->execute();
-    $stmt->store_result();
-
-    if ($stmt->num_rows > 0) {
-        return ['boleh' => false, 'pesan' => 'Anda sudah absen masuk untuk shift ini.'];
-    }
-
-    return ['boleh' => true, 'pesan' => ''];
-}
-
-/**
- * Cek apakah pamdal boleh absen keluar.
- */
-function bolehAbsenKeluar($user_id, $conn) {
-    $today = date('Y-m-d');
-
-    $sql  = "SELECT id FROM absensi 
-             WHERE user_id = ? AND tanggal = ? 
-             AND waktu_masuk IS NOT NULL AND waktu_keluar IS NULL LIMIT 1";
-    $stmt = $conn->prepare($sql);
-    $stmt->bind_param("is", $user_id, $today);
-    $stmt->execute();
-    $result = $stmt->get_result();
-
-    if ($result->num_rows === 0) {
-        return ['boleh' => false, 'pesan' => 'Tidak ada absen masuk aktif hari ini.'];
-    }
-
-    $data = $result->fetch_assoc();
-    return ['boleh' => true, 'absensi_id' => $data['id'], 'pesan' => ''];
-}
-
-// =============================================
-// START SESSION & KONEKSI GLOBAL
-// =============================================
+// Start session
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
+// Buat koneksi global
 $conn = getConnection();
+
 ?>
