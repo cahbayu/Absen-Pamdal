@@ -1,1554 +1,1224 @@
 <?php
-// dashboard.php
+// dashboard.php — Dashboard Pamdal
 require_once 'config.php';
-require_once 'function.php';
-
-// Cek apakah user sudah login
 requireLogin();
+requireRole(ROLE_PAMDAL);
 
-// Ambil data user dari session
-$user_name = $_SESSION['name'];
-$user_email = $_SESSION['email'];
-$user_role = $_SESSION['role'];
+$userId   = $_SESSION['user_id'];
+$nama     = $_SESSION['nama'];
+$today    = date('Y-m-d');
+$dayName  = ['Sunday'=>'Minggu','Monday'=>'Senin','Tuesday'=>'Selasa',
+             'Wednesday'=>'Rabu','Thursday'=>'Kamis','Friday'=>'Jumat','Saturday'=>'Sabtu'];
+$hariIni  = $dayName[date('l')] . ', ' . formatTanggal($today);
 
-// Gunakan fungsi dari function.php untuk mendapatkan total stok ATK (jika user punya akses)
-$totalstok_atk = 0;
-$totalstokmasuk_atk = 0;
-$totalstokkeluar_atk = 0;
+// ── Ambil absensi hari ini ───────────────────────────────────────────────────
+$absenHariIni = null;
+$stmt = $conn->prepare(
+    "SELECT a.*, s.nama_shift, s.jam_masuk, s.jam_keluar
+     FROM absensi a
+     JOIN shift s ON s.id = a.shift_id
+     WHERE a.user_id = ? AND a.tanggal = ?
+     ORDER BY a.id DESC LIMIT 1"
+);
+$stmt->bind_param("is", $userId, $today);
+$stmt->execute();
+$absenHariIni = $stmt->get_result()->fetch_assoc();
+$stmt->close();
 
-if(canRead('atk')) {
-    $totalstok_atk = getTotalStokAkhir($conn, 'atk');
-    $totalstokmasuk_atk = getTotalBarangMasuk($conn, 6, 'atk'); // 6 bulan terakhir
-    $totalstokkeluar_atk = getTotalBarangKeluar($conn, 6, 'atk'); // 6 bulan terakhir
+// ── Absensi bulan ini ────────────────────────────────────────────────────────
+$bulanIni = date('Y-m');
+$stmt = $conn->prepare(
+    "SELECT COUNT(*) AS total,
+            SUM(status_masuk='hadir') AS hadir,
+            SUM(status_masuk='terlambat') AS terlambat,
+            SUM(status_masuk='sangat_terlambat') AS sangat_terlambat,
+            SUM(status_masuk='tidak_hadir') AS tidak_hadir
+     FROM absensi
+     WHERE user_id = ? AND DATE_FORMAT(tanggal,'%Y-%m') = ?"
+);
+$stmt->bind_param("is", $userId, $bulanIni);
+$stmt->execute();
+$statBulan = $stmt->get_result()->fetch_assoc();
+$stmt->close();
+
+// ── 5 riwayat terakhir ───────────────────────────────────────────────────────
+$stmt = $conn->prepare(
+    "SELECT a.tanggal, a.waktu_masuk, a.waktu_keluar,
+            a.status_masuk, a.status_keluar, s.nama_shift
+     FROM absensi a
+     JOIN shift s ON s.id = a.shift_id
+     WHERE a.user_id = ?
+     ORDER BY a.tanggal DESC, a.id DESC LIMIT 5"
+);
+$stmt->bind_param("i", $userId);
+$stmt->execute();
+$riwayat = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+$stmt->close();
+
+// ── Laporan hari ini ─────────────────────────────────────────────────────────
+$laporanHariIni = null;
+if ($absenHariIni) {
+    $stmt = $conn->prepare(
+        "SELECT status, waktu_submit FROM laporan_harian
+         WHERE absensi_id = ? LIMIT 1"
+    );
+    $stmt->bind_param("i", $absenHariIni['id']);
+    $stmt->execute();
+    $laporanHariIni = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
 }
 
-// Gunakan fungsi dari function.php untuk mendapatkan total stok Non-ATK (jika user punya akses)
-$totalstok_nonatk = 0;
-$totalstokmasuk_nonatk = 0;
-$totalstokkeluar_nonatk = 0;
+// ── Ambil shift yang tersedia hari ini ───────────────────────────────────────
+$shifts = $conn->query("SELECT * FROM shift ORDER BY jam_masuk")->fetch_all(MYSQLI_ASSOC);
 
-if(canRead('non_atk')) {
-    $totalstok_nonatk = getTotalStokAkhir($conn, 'non_atk');
-    $totalstokmasuk_nonatk = getTotalBarangMasuk($conn, 6, 'non_atk'); // 6 bulan terakhir
-    $totalstokkeluar_nonatk = getTotalBarangKeluar($conn, 6, 'non_atk'); // 6 bulan terakhir
+// ── Toleransi dari pengaturan ────────────────────────────────────────────────
+$toleransi = getToleransiMasuk($conn);
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+function badgeStatus(string $status): string {
+    return match($status) {
+        'hadir'           => '<span class="pill pill-ok">Hadir</span>',
+        'terlambat'       => '<span class="pill pill-warn">Terlambat</span>',
+        'sangat_terlambat'=> '<span class="pill pill-danger">Sangat Terlambat</span>',
+        'tidak_hadir'     => '<span class="pill pill-danger">Tidak Hadir</span>',
+        'tepat_waktu'     => '<span class="pill pill-ok">Tepat Waktu</span>',
+        'pulang_awal'     => '<span class="pill pill-warn">Pulang Awal</span>',
+        'lanjut_shift'    => '<span class="pill pill-info">Lanjut Shift</span>',
+        default           => '<span class="pill pill-muted">–</span>',
+    };
 }
 
-// Total keseluruhan
-$totalstok_all = $totalstok_atk + $totalstok_nonatk;
-$totalstokmasuk_all = $totalstokmasuk_atk + $totalstokmasuk_nonatk;
-$totalstokkeluar_all = $totalstokkeluar_atk + $totalstokkeluar_nonatk;
+function laporanBadge(?array $lap): string {
+    if (!$lap) return '<span class="pill pill-muted">Belum dibuat</span>';
+    return match($lap['status']) {
+        'draft'   => '<span class="pill pill-muted">Draft</span>',
+        'pending' => '<span class="pill pill-warn">Menunggu Review</span>',
+        'acc'     => '<span class="pill pill-ok">Disetujui</span>',
+        'revisi'  => '<span class="pill pill-danger">Perlu Revisi</span>',
+        default   => '<span class="pill pill-muted">–</span>',
+    };
+}
 ?>
 <!DOCTYPE html>
 <html lang="id">
-    <head>
-        <meta charset="utf-8" />
-        <meta http-equiv="X-UA-Compatible" content="IE=edge" />
-        <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no" />
-        <meta name="description" content="Sistem Informasi Manajemen Persediaan Barang SELARAS" />
-        <meta name="author" content="Awal Cahyo" />
-        <title>Dashboard - SELARAS</title>
-        <link href="css/styles.css" rel="stylesheet" />
-        <link href="https://cdn.datatables.net/1.10.20/css/dataTables.bootstrap4.min.css" rel="stylesheet" crossorigin="anonymous" />
-        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css">
-        <script src="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.1/js/all.min.js" crossorigin="anonymous"></script>
-        <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Dashboard — <?= htmlspecialchars($nama) ?></title>
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,600;0,700;1,600&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
         :root {
-            --bg-primary: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            --bg-secondary: #f0f7ff;
-            --bg-white: #ffffff;
-            --text-primary: #2d3748;
-            --text-secondary: #718096;
-            --border-color: #e2e8f0;
-            --accent-blue: #3b82f6;
-            --accent-green: #10b981;
-            --accent-orange: #f59e0b;
-            --accent-cyan: #06b6d4;
-            --accent-teal: #14b8a6;
-            --accent-purple: #8b5cf6;
-            --accent-pink: #ec4899;
-            --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06);
-            --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.1);
-            --shadow-lg: 0 10px 30px rgba(0, 0, 0, 0.15);
+            --br-950: #1c0f05;
+            --br-900: #2d1a0a;
+            --br-800: #4a2c14;
+            --br-700: #6b3f1e;
+            --br-600: #8b5a2b;
+            --br-500: #a96f3a;
+            --br-400: #c8904f;
+            --br-300: #ddb07a;
+            --br-200: #edd4af;
+            --br-100: #f7ead8;
+            --br-50:  #fdf5ec;
+            --cream:  #fef9f2;
+            --gold:   #c9a84c;
+            --gold-l: #e8cb7e;
+            --ok:     #3d6b3a;
+            --ok-t:   rgba(61,107,58,0.12);
+            --ok-c:   #6bcf6b;
+            --warn-t: rgba(180,120,20,0.12);
+            --warn-c: #e8c060;
+            --danger-t: rgba(155,40,40,0.1);
+            --danger-c: #e88080;
+            --info-t: rgba(50,90,160,0.1);
+            --info-c: #7ab4f0;
+            --muted-t: rgba(200,160,80,0.08);
+            --muted-c: var(--br-400);
+            --sidebar-w: 240px;
         }
+        * { margin:0; padding:0; box-sizing:border-box; }
+        html { scroll-behavior: smooth; }
 
         body {
-            background: linear-gradient(135deg, #e0f2fe 0%, #dbeafe 50%, #e0e7ff 100%);
-            background-attachment: fixed;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            color: var(--text-primary);
-            line-height: 1.6;
-            padding-top: 56px;
+            font-family: 'DM Sans', sans-serif;
+            background: var(--br-50);
+            color: var(--br-900);
+            min-height: 100vh;
+            display: flex;
         }
 
-        /* Navbar dengan Glass Effect */
-        .sb-topnav {
-            background: rgba(255, 255, 255, 0.25) !important;
-            backdrop-filter: blur(20px) saturate(180%);
-            -webkit-backdrop-filter: blur(20px) saturate(180%);
-            border: 1px solid rgba(255, 255, 255, 0.3);
-            border-top: none;
-            box-shadow: 0 8px 32px rgba(59, 130, 246, 0.15);
-            padding: 0.75rem 1.5rem;
-            z-index: 1040;
+        /* ── SIDEBAR ───────────────────────────────────── */
+        .sidebar {
+            width: var(--sidebar-w);
+            background: linear-gradient(180deg, var(--br-900) 0%, var(--br-950) 100%);
+            display: flex;
+            flex-direction: column;
             position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            display: flex !important;
-            flex-wrap: nowrap;
-            align-items: center;
-            animation: slideDown 0.5s ease-out;
+            top: 0; left: 0; bottom: 0;
+            z-index: 100;
+            transition: transform 0.3s ease;
+            border-right: 1px solid rgba(201,168,76,0.12);
+        }
+        .sidebar::before {
+            content: '';
+            position: absolute; inset: 0;
+            background: url("data:image/svg+xml,%3Csvg width='40' height='40' viewBox='0 0 40 40' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='%23c9a84c' fill-opacity='0.03'%3E%3Cpath d='M20 20.5V18H0v5h5v5H0v5h5v4h5v-4h5v4h5v-4h5v4h5v-4h4v-5h-4v-5h4v-5h-4v-5H20v2.5zm-15 4v-4h5v4h-5zm0 5v-4h5v4h-5zm5-5v-4h5v4h-5zm5 5v-4h5v4h-5zm-5 0v-4h5v4h-5zm5-5v-4h5v4h-5zm5 5v-4h5v4h-5zm0-5v-4h5v4h-5z'/%3E%3C/g%3E%3C/svg%3E");
+            pointer-events: none;
         }
 
-        @keyframes slideDown {
-            from {
-                transform: translateY(-100%);
-                opacity: 0;
-            }
-            to {
-                transform: translateY(0);
-                opacity: 1;
-            }
+        .sb-brand {
+            padding: 24px 20px 20px;
+            border-bottom: 1px solid rgba(201,168,76,0.1);
+            position: relative; z-index: 1;
         }
-
-        .navbar-brand {
-            font-weight: 700;
-            font-size: 1.35rem;
-            color: #1e40af !important;
-            display: flex !important;
-            align-items: center;
-            gap: 0.75rem;
-            margin: 0 !important;
-            padding: 0.5rem 0 !important;
-            order: 1;
+        .sb-logo-row {
+            display: flex; align-items: center; gap: 12px;
+        }
+        .sb-logo-mark {
+            width: 40px; height: 40px;
+            background: linear-gradient(135deg, var(--gold), var(--br-500));
+            border-radius: 10px;
+            display: flex; align-items: center; justify-content: center;
+            font-family: 'Playfair Display', serif;
+            font-size: 18px; font-weight: 700;
+            color: var(--br-950);
             flex-shrink: 0;
-            transition: transform 0.3s ease;
+            box-shadow: 0 4px 12px rgba(201,168,76,0.3);
+        }
+        .sb-logo-text {
+            font-family: 'Playfair Display', serif;
+            font-size: 16px; font-weight: 700;
+            color: var(--cream);
+            line-height: 1.2;
+        }
+        .sb-logo-sub {
+            font-size: 10px; font-weight: 400;
+            color: var(--br-400);
+            letter-spacing: 0.5px;
         }
 
-        .navbar-brand:hover {
-            transform: scale(1.05);
+        .sb-user {
+            padding: 16px 20px;
+            border-bottom: 1px solid rgba(201,168,76,0.08);
+            position: relative; z-index: 1;
         }
-
-        .brand-logo {
-            height: 40px;
-            width: auto;
-            object-fit: contain;
-            display: block;
-            transition: transform 0.3s ease;
-            filter: drop-shadow(2px 2px 4px rgba(59, 130, 246, 0.2));
-        }
-
-        .navbar-brand:hover .brand-logo {
-            transform: rotate(5deg) scale(1.1);
-        }
-
-        .brand-text {
-            font-weight: 700;
-            font-size: 1.35rem;
-            color: #1e40af;
-            letter-spacing: 1px;
-            text-shadow: 2px 2px 4px rgba(59, 130, 246, 0.1);
-        }
-
-        #sidebarToggle {
-            background: rgba(59, 130, 246, 0.15);
-            border: 1px solid rgba(59, 130, 246, 0.3);
-            border-radius: 8px;
-            padding: 8px 12px;
-            transition: all 0.3s ease;
-            color: #1e40af !important;
-            order: 3;
-            margin-left: auto !important;
-            margin-right: 1rem !important;
-            backdrop-filter: blur(10px);
-        }
-
-        #sidebarToggle:hover {
-            background: rgba(59, 130, 246, 0.25);
-            border-color: rgba(59, 130, 246, 0.5);
-            transform: rotate(90deg);
-        }
-
-        #sidebarToggle:focus {
-            outline: none;
-            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
-        }
-
-        #sidebarToggle i {
-            color: #1e40af;
-            font-size: 1rem;
-        }
-
-        .navbar-nav {
-            order: 4;
-            margin: 0 !important;
-        }
-
-        .navbar-nav .nav-link {
-            color: #1e40af !important;
-            background: rgba(59, 130, 246, 0.15);
+        .sb-avatar {
+            width: 44px; height: 44px;
+            background: linear-gradient(135deg, var(--br-600), var(--br-800));
             border-radius: 50%;
-            width: 40px;
-            height: 40px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            transition: all 0.3s ease;
-            backdrop-filter: blur(10px);
+            display: flex; align-items: center; justify-content: center;
+            font-family: 'Playfair Display', serif;
+            font-size: 18px; font-weight: 700;
+            color: var(--gold-l);
+            border: 2px solid rgba(201,168,76,0.25);
+            margin-bottom: 10px;
         }
-
-        .navbar-nav .nav-link:hover {
-            background: rgba(59, 130, 246, 0.25);
-            transform: scale(1.1);
+        .sb-user-name {
+            font-size: 13.5px; font-weight: 600;
+            color: var(--br-100);
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
         }
-
-        .dropdown-menu {
-            border: 1px solid rgba(255, 255, 255, 0.3);
-            background: rgba(255, 255, 255, 0.9);
-            backdrop-filter: blur(20px) saturate(180%);
-            -webkit-backdrop-filter: blur(20px) saturate(180%);
-            box-shadow: 0 8px 32px rgba(59, 130, 246, 0.15);
-            border-radius: 12px;
-            padding: 0.5rem;
-            animation: fadeInDown 0.3s ease;
-        }
-
-        @keyframes fadeInDown {
-            from {
-                opacity: 0;
-                transform: translateY(-10px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-
-        .dropdown-item {
-            border-radius: 8px;
-            padding: 0.75rem 1rem;
-            transition: all 0.2s;
-            color: var(--text-primary);
-        }
-
-        .dropdown-item:hover {
-            background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
-            color: white;
-            transform: translateX(5px);
-        }
-
-        /* Role Badge Styles - Untuk Dropdown Menu */
-        .dropdown-item .role-badge {
-            display: inline-block;
-            padding: 0.25rem 0.6rem;
-            border-radius: 12px;
-            font-size: 0.7rem;
-            font-weight: 600;
+        .sb-user-role {
+            font-size: 11px; font-weight: 500;
+            color: var(--gold);
+            letter-spacing: 0.8px;
             text-transform: uppercase;
-            letter-spacing: 0.3px;
-            margin-left: 0.5rem;
-            vertical-align: middle;
+            margin-top: 2px;
         }
 
-        .dropdown-item .role-super-admin {
-            background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
-            color: white;
-            box-shadow: 0 2px 8px rgba(239, 68, 68, 0.3);
+        .sb-nav {
+            flex: 1;
+            padding: 16px 12px;
+            overflow-y: auto;
+            position: relative; z-index: 1;
         }
-
-        .dropdown-item .role-admin {
-            background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
-            color: white;
-            box-shadow: 0 2px 8px rgba(245, 158, 11, 0.3);
+        .sb-section-label {
+            font-size: 10px; font-weight: 600;
+            text-transform: uppercase; letter-spacing: 1.5px;
+            color: var(--br-600);
+            padding: 0 8px;
+            margin: 14px 0 6px;
         }
+        .sb-section-label:first-child { margin-top: 0; }
 
-        .dropdown-item .role-user {
-            background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
-            color: white;
-            box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
-        }
-
-        /* Role Badge untuk Welcome Banner */
-        .welcome-banner .role-badge {
-            display: inline-block;
-            padding: 0.35rem 0.75rem;
-            background: rgba(255, 255, 255, 0.2);
-            border-radius: 20px;
-            font-size: 0.85rem;
-            margin-top: 0.5rem;
-        }
-
-        /* Theme Toggle Switch */
-        .theme-toggle-container {
-            padding: 0.75rem 1rem !important;
-            cursor: default !important;
-        }
-
-        .theme-toggle-container:hover {
-            background: transparent !important;
-            transform: none !important;
-        }
-
-        .theme-label {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            font-weight: 500;
-            color: var(--text-primary);
-        }
-
-        .theme-switch {
-            position: relative;
-            display: inline-block;
-            width: 50px;
-            height: 26px;
-            margin: 0;
-        }
-
-        .theme-switch input {
-            opacity: 0;
-            width: 0;
-            height: 0;
-        }
-
-        .theme-slider {
-            position: absolute;
+        .nav-item {
+            display: flex; align-items: center; gap: 10px;
+            padding: 10px 12px;
+            border-radius: 10px;
+            font-size: 13.5px; font-weight: 500;
+            color: var(--br-300);
             cursor: pointer;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: linear-gradient(135deg, #e2e8f0 0%, #cbd5e1 100%);
-            transition: 0.4s;
-            border-radius: 34px;
-            box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.1);
-        }
-
-        .theme-slider:before {
-            position: absolute;
-            content: "";
-            height: 20px;
-            width: 20px;
-            left: 3px;
-            bottom: 3px;
-            background: white;
-            transition: 0.4s;
-            border-radius: 50%;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
-        }
-
-        .theme-switch input:checked + .theme-slider {
-            background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);
-        }
-
-        .theme-switch input:checked + .theme-slider:before {
-            transform: translateX(24px);
-        }
-
-        .dropdown-divider {
-            margin: 0.5rem 0;
-            border-top: 1px solid rgba(226, 232, 240, 0.5);
-        }
-
-        /* Sidebar dengan Glass Effect */
-        .sb-sidenav-dark {
-            background: rgba(255, 255, 255, 0.25) !important;
-            backdrop-filter: blur(20px) saturate(180%);
-            -webkit-backdrop-filter: blur(20px) saturate(180%);
-            border-right: 1px solid rgba(255, 255, 255, 0.3);
-            box-shadow: 4px 0 32px rgba(59, 130, 246, 0.1);
-        }
-
-        .sb-sidenav-menu-heading {
-            color: #0369a1 !important;
-            font-size: 0.75rem;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 1.5px;
-            padding: 1.5rem 1rem 0.5rem;
-        }
-
-        .sb-sidenav-dark .sb-sidenav-menu .nav-link {
-            color: var(--text-primary);
-            padding: 0.85rem 1rem;
-            margin: 0.35rem 0.75rem;
-            border-radius: 10px;
-            transition: all 0.3s ease;
-            font-weight: 500;
-            font-size: 0.95rem;
-            position: relative;
-            overflow: hidden;
-        }
-
-        .sb-sidenav-dark .sb-sidenav-menu .nav-link::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: -100%;
-            width: 100%;
-            height: 100%;
-            background: linear-gradient(90deg, transparent, rgba(59, 130, 246, 0.15), transparent);
-            transition: left 0.5s ease;
-        }
-
-        .sb-sidenav-dark .sb-sidenav-menu .nav-link:hover::before {
-            left: 100%;
-        }
-
-        .sb-sidenav-dark .sb-sidenav-menu .nav-link:hover {
-            background: rgba(59, 130, 246, 0.15);
-            color: #1e40af;
-            transform: translateX(5px);
-        }
-
-        .sb-sidenav-dark .sb-sidenav-menu .nav-link.active {
-            background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
-            color: white;
-            box-shadow: 0 4px 15px rgba(59, 130, 246, 0.4);
-            transform: scale(1.02);
-        }
-
-        .sb-nav-link-icon {
-            margin-right: 0.75rem;
-            width: 20px;
-            color: var(--text-secondary) !important;
-            transition: all 0.3s ease;
-        }
-
-        .sb-nav-link-icon i {
-            color: inherit !important;
-        }
-
-        .sb-sidenav-dark .sb-sidenav-menu .nav-link:hover .sb-nav-link-icon {
-            color: #1e40af !important;
-            transform: scale(1.2);
-        }
-
-        .sb-sidenav-dark .sb-sidenav-menu .nav-link.active .sb-nav-link-icon {
-            color: white !important;
-        }
-
-        .sb-sidenav-menu-nested .nav-link {
-            padding-left: 3rem !important;
-            font-size: 0.9rem;
-        }
-
-        /* Collapse Arrow Animation */
-        .sb-sidenav-collapse-arrow {
-            transition: transform 0.3s ease;
-            margin-left: auto;
-        }
-
-        .nav-link[aria-expanded="true"] .sb-sidenav-collapse-arrow {
-            transform: rotate(180deg);
-        }
-
-        /* Main Content */
-        #layoutSidenav_content {
-            background: transparent;
-        }
-
-        .container-fluid {
-            padding: 2rem;
-            max-width: 1400px;
-            animation: fadeIn 0.6s ease-out;
-        }
-
-        @keyframes fadeIn {
-            from {
-                opacity: 0;
-                transform: translateY(20px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-
-        h1 {
-            color: var(--text-primary);
-            font-weight: 700;
-            font-size: 2rem;
-            margin-bottom: 0.5rem;
-            background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-        }
-
-        .breadcrumb {
-            background: transparent;
-            padding: 0;
-            margin-bottom: 2rem;
-            font-size: 0.9rem;
-        }
-
-        .breadcrumb-item.active {
-            color: var(--text-secondary);
-        }
-
-        /* Welcome Banner */
-        .welcome-banner {
-            background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
-            border-radius: 16px;
-            padding: 1.5rem;
-            margin-bottom: 2rem;
-            color: white;
-            box-shadow: 0 8px 32px rgba(59, 130, 246, 0.3);
-        }
-
-        .welcome-banner h3 {
-            color: white;
-            margin: 0;
-            font-size: 1.25rem;
-        }
-
-        .welcome-banner p {
-            margin: 0.5rem 0 0 0;
-            opacity: 0.9;
-        }
-
-        /* Section Title */
-        .section-title {
-            font-size: 1.25rem;
-            font-weight: 700;
-            color: var(--text-primary);
-            margin: 2.5rem 0 1.5rem 0;
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-        }
-
-        .section-title i {
-            color: #2563eb;
-            font-size: 1.5rem;
-        }
-
-        .section-divider {
-            height: 3px;
-            background: linear-gradient(90deg, #3b82f6 0%, transparent 100%);
-            margin-bottom: 1.5rem;
-            border-radius: 10px;
-        }
-
-        /* Stats Cards dengan Glass Effect */
-        .stats-card {
-            background: rgba(255, 255, 255, 0.35);
-            backdrop-filter: blur(20px) saturate(180%);
-            -webkit-backdrop-filter: blur(20px) saturate(180%);
-            border: 1px solid rgba(255, 255, 255, 0.3);
-            border-radius: 16px;
-            padding: 1.75rem;
-            transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-            height: 100%;
-            position: relative;
-            overflow: hidden;
-            box-shadow: 0 8px 32px rgba(59, 130, 246, 0.1);
-        }
-
-        .stats-card::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            height: 4px;
-            background: linear-gradient(90deg, #3b82f6 0%, #06b6d4 100%);
-            transform: scaleX(0);
-            transition: transform 0.4s ease;
-        }
-
-        .stats-card:hover::before {
-            transform: scaleX(1);
-        }
-
-        .stats-card:hover {
-            box-shadow: 0 15px 40px rgba(59, 130, 246, 0.25);
-            transform: translateY(-8px) scale(1.02);
-            background: rgba(255, 255, 255, 0.45);
-        }
-
-        .card-icon {
-            width: 56px;
-            height: 56px;
-            border-radius: 14px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 1.75rem;
-            margin-bottom: 1.25rem;
-            transition: all 0.4s ease;
-            animation: float 3s ease-in-out infinite;
-        }
-
-        @keyframes float {
-            0%, 100% {
-                transform: translateY(0);
-            }
-            50% {
-                transform: translateY(-10px);
-            }
-        }
-
-        .stats-card:hover .card-icon {
-            transform: rotate(10deg) scale(1.1);
-            animation: none;
-        }
-
-        .icon-blue { 
-            background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
-            color: white;
-            box-shadow: 0 8px 20px rgba(59, 130, 246, 0.35);
-        }
-
-        .icon-green { 
-            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
-            color: white;
-            box-shadow: 0 8px 20px rgba(16, 185, 129, 0.35);
-        }
-
-        .icon-orange { 
-            background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
-            color: white;
-            box-shadow: 0 8px 20px rgba(245, 158, 11, 0.35);
-        }
-
-        .icon-purple { 
-            background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);
-            color: white;
-            box-shadow: 0 8px 20px rgba(139, 92, 246, 0.35);
-        }
-
-        .icon-pink { 
-            background: linear-gradient(135deg, #ec4899 0%, #db2777 100%);
-            color: white;
-            box-shadow: 0 8px 20px rgba(236, 72, 153, 0.35);
-        }
-
-        .icon-cyan { 
-            background: linear-gradient(135deg, #06b6d4 0%, #0891b2 100%);
-            color: white;
-            box-shadow: 0 8px 20px rgba(6, 182, 212, 0.35);
-        }
-
-        .card-title {
-            font-size: 0.85rem;
-            color: var(--text-secondary);
-            margin-bottom: 0.75rem;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-
-        .card-value {
-            font-size: 1.85rem;
-            font-weight: 700;
-            background: linear-gradient(135deg, #3b82f6 0%, #06b6d4 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-            margin: 0;
-            transition: all 0.3s ease;
-        }
-
-        .stats-card:hover .card-value {
-            transform: scale(1.05);
-        }
-
-        .card-link {
-            color: #2563eb;
             text-decoration: none;
-            font-size: 0.85rem;
-            font-weight: 600;
-            margin-top: 1.25rem;
-            display: inline-flex;
-            align-items: center;
-            gap: 0.5rem;
-            transition: all 0.3s ease;
+            transition: all 0.2s;
+            margin-bottom: 2px;
+            position: relative;
+        }
+        .nav-item svg { flex-shrink: 0; opacity: 0.7; transition: opacity 0.2s; }
+        .nav-item:hover {
+            background: rgba(201,168,76,0.08);
+            color: var(--br-100);
+        }
+        .nav-item:hover svg { opacity: 1; }
+        .nav-item.active {
+            background: rgba(201,168,76,0.14);
+            color: var(--gold-l);
+        }
+        .nav-item.active svg { opacity: 1; color: var(--gold); }
+        .nav-item.active::before {
+            content: '';
+            position: absolute; left: 0; top: 8px; bottom: 8px;
+            width: 3px; border-radius: 0 3px 3px 0;
+            background: var(--gold);
+        }
+        .nav-badge {
+            margin-left: auto;
+            background: rgba(201,168,76,0.15);
+            border: 1px solid rgba(201,168,76,0.25);
+            color: var(--gold-l);
+            font-size: 10px; font-weight: 700;
+            padding: 2px 7px; border-radius: 99px;
         }
 
-        .card-link:hover {
-            gap: 0.75rem;
-            color: #1e40af;
+        .sb-footer {
+            padding: 16px 12px;
+            border-top: 1px solid rgba(201,168,76,0.08);
+            position: relative; z-index: 1;
         }
-
-        /* Table Container dengan Glass Effect */
-        .table-container {
-            background: rgba(255, 255, 255, 0.35);
-            backdrop-filter: blur(20px) saturate(180%);
-            -webkit-backdrop-filter: blur(20px) saturate(180%);
-            border: 1px solid rgba(255, 255, 255, 0.3);
-            border-radius: 16px;
-            padding: 2rem;
-            margin-top: 2rem;
-            box-shadow: 0 8px 32px rgba(59, 130, 246, 0.1);
-            animation: slideUp 0.6s ease-out 0.3s both;
-        }
-
-        @keyframes slideUp {
-            from {
-                opacity: 0;
-                transform: translateY(30px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-
-        .table-title {
-            font-size: 1.35rem;
-            font-weight: 700;
-            color: var(--text-primary);
-            margin-bottom: 1.75rem;
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-        }
-
-        .table-title i {
-            color: #2563eb;
-            font-size: 1.5rem;
-        }
-
-        .table {
-            margin: 0;
-        }
-
-        .table thead th {
-            background: rgba(59, 130, 246, 0.1);
-            color: var(--text-primary);
-            border: none;
-            font-weight: 700;
-            font-size: 0.85rem;
-            padding: 1.25rem 1rem;
-            border-bottom: 2px solid #3b82f6;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-
-        .table tbody tr {
-            border-bottom: 1px solid var(--border-color);
-            transition: all 0.3s ease;
-        }
-
-        .table tbody tr:hover {
-            background: rgba(59, 130, 246, 0.08);
-            transform: scale(1.01);
-            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.15);
-        }
-
-        .table tbody td {
-            padding: 1.25rem 1rem;
-            font-size: 0.9rem;
-            color: var(--text-primary);
-            vertical-align: middle;
-        }
-
-        .badge {
-            padding: 0.5rem 1rem;
-            border-radius: 20px;
-            font-weight: 600;
-            font-size: 0.8rem;
-            display: inline-flex;
-            align-items: center;
-            gap: 0.5rem;
-            transition: all 0.3s ease;
-        }
-
-        .badge:hover {
-            transform: scale(1.05);
-        }
-
-        .badge-primary {
-            background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
-            color: white;
-            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.35);
-        }
-
-        .badge-success {
-            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
-            color: white;
-            box-shadow: 0 4px 12px rgba(16, 185, 129, 0.35);
-        }
-
-        .badge-warning {
-            background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
-            color: white;
-            box-shadow: 0 4px 12px rgba(245, 158, 11, 0.35);
-        }
-
-        .badge-info {
-            background: linear-gradient(135deg, #06b6d4 0%, #0891b2 100%);
-            color: white;
-            box-shadow: 0 4px 12px rgba(6, 182, 212, 0.35);
-        }
-
-        /* Footer dengan Glass Effect */
-        footer {
-            background: rgba(255, 255, 255, 0.35) !important;
-            backdrop-filter: blur(20px) saturate(180%);
-            -webkit-backdrop-filter: blur(20px) saturate(180%);
-            border-top: 1px solid rgba(255, 255, 255, 0.3);
-            padding: 1.5rem 0;
-            margin-top: 3rem;
-        }
-
-        footer .text-muted {
-            color: var(--text-secondary) !important;
-            font-size: 0.875rem;
-        }
-
-        /* DataTables Customization */
-        .dataTables_wrapper .dataTables_length,
-        .dataTables_wrapper .dataTables_filter {
-            margin-bottom: 1.5rem;
-        }
-
-        .dataTables_wrapper .dataTables_filter input {
-            border: 2px solid var(--border-color);
+        .btn-logout {
+            display: flex; align-items: center; gap: 10px;
+            width: 100%;
+            padding: 10px 12px;
             border-radius: 10px;
-            padding: 0.65rem 1rem;
-            transition: all 0.3s ease;
-            background: var(--bg-secondary);
+            font-size: 13.5px; font-weight: 500;
+            color: var(--br-400);
+            background: none; border: none; cursor: pointer;
+            transition: all 0.2s;
+            font-family: 'DM Sans', sans-serif;
+            text-decoration: none;
+        }
+        .btn-logout:hover {
+            background: rgba(200,60,60,0.1);
+            color: #e88;
         }
 
-        .dataTables_wrapper .dataTables_filter input:focus {
-            outline: none;
-            border-color: #3b82f6;
-            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
-            background: white;
+        /* ── MAIN ──────────────────────────────────────── */
+        .main {
+            margin-left: var(--sidebar-w);
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
         }
 
-        .dataTables_wrapper .dataTables_paginate .paginate_button {
+        /* Topbar */
+        .topbar {
+            background: var(--cream);
+            border-bottom: 1px solid var(--br-200);
+            padding: 0 32px;
+            height: 64px;
+            display: flex; align-items: center; justify-content: space-between;
+            position: sticky; top: 0; z-index: 50;
+            box-shadow: 0 1px 8px rgba(74,44,20,0.06);
+        }
+        .topbar-left {
+            display: flex; align-items: center; gap: 14px;
+        }
+        .hamburger {
+            display: none;
+            background: none; border: none; cursor: pointer;
+            padding: 6px; color: var(--br-600);
+        }
+        .topbar-date {
+            font-size: 13.5px;
+            color: var(--br-500);
+            font-weight: 400;
+        }
+        .topbar-date strong {
+            color: var(--br-800);
+            font-weight: 600;
+        }
+        .topbar-right {
+            display: flex; align-items: center; gap: 10px;
+        }
+        .topbar-time {
+            font-family: 'DM Mono', monospace;
+            font-size: 15px; font-weight: 500;
+            color: var(--br-700);
+            background: var(--br-100);
+            padding: 6px 14px;
             border-radius: 8px;
-            margin: 0 3px;
-            transition: all 0.3s ease;
+            border: 1px solid var(--br-200);
         }
 
-        .dataTables_wrapper .dataTables_paginate .paginate_button:hover {
-            background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
-            color: white !important;
-            border-color: transparent;
+        /* Content area */
+        .content {
+            padding: 28px 32px 48px;
+            flex: 1;
         }
 
-        .dataTables_wrapper .dataTables_paginate .paginate_button.current {
-            background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%) !important;
-            color: white !important;
-            border-color: transparent !important;
+        /* Page title */
+        .page-head {
+            margin-bottom: 28px;
+            animation: fadeUp 0.5s ease both;
+        }
+        .page-eyebrow {
+            font-size: 11px; font-weight: 600;
+            text-transform: uppercase; letter-spacing: 2px;
+            color: var(--br-400);
+            margin-bottom: 6px;
+        }
+        .page-title {
+            font-family: 'Playfair Display', serif;
+            font-size: 26px; font-weight: 700;
+            color: var(--br-900);
+            line-height: 1.2;
+        }
+        .page-title span { color: var(--br-500); }
+
+        @keyframes fadeUp {
+            from { opacity:0; transform:translateY(14px); }
+            to   { opacity:1; transform:translateY(0); }
         }
 
-        /* Dark Mode Styles */
-        body.dark-mode {
-            background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #334155 100%);
-            color: #e2e8f0;
+        /* ── ABSEN TODAY CARD ──────────────────────────── */
+        .absen-hero {
+            background: linear-gradient(135deg, var(--br-800) 0%, var(--br-900) 100%);
+            border-radius: 18px;
+            padding: 28px 28px 24px;
+            margin-bottom: 24px;
+            position: relative;
+            overflow: hidden;
+            animation: fadeUp 0.5s 0.05s ease both;
+        }
+        .absen-hero::before {
+            content: '';
+            position: absolute;
+            width: 300px; height: 300px;
+            background: radial-gradient(circle, rgba(201,168,76,0.12) 0%, transparent 70%);
+            top: -100px; right: -80px;
+            border-radius: 50%;
+            pointer-events: none;
+        }
+        .absen-hero::after {
+            content: '';
+            position: absolute; inset: 0;
+            background: url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='%23c9a84c' fill-opacity='0.03'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/svg%3E");
+            pointer-events: none;
+        }
+        .absen-hero-inner {
+            position: relative; z-index: 1;
+            display: flex; align-items: flex-start;
+            justify-content: space-between; gap: 20px;
+            flex-wrap: wrap;
+        }
+        .absen-status-col {}
+        .absen-label {
+            font-size: 11px; font-weight: 600; letter-spacing: 1.5px;
+            text-transform: uppercase;
+            color: var(--gold);
+            margin-bottom: 8px;
+        }
+        .absen-shift-name {
+            font-family: 'Playfair Display', serif;
+            font-size: 22px; font-weight: 700;
+            color: var(--cream);
+            margin-bottom: 6px;
+        }
+        .absen-time-row {
+            display: flex; align-items: center; gap: 16px;
+            flex-wrap: wrap;
+        }
+        .absen-time-item {
+            font-size: 13px;
+            color: var(--br-300);
+        }
+        .absen-time-item strong {
+            font-family: 'DM Mono', monospace;
+            font-size: 15px; font-weight: 500;
+            color: var(--br-100);
+        }
+        .absen-divider {
+            color: var(--br-600);
+            font-size: 18px;
+        }
+        .absen-badges-row {
+            display: flex; gap: 8px;
+            flex-wrap: wrap;
+            margin-top: 12px;
         }
 
-        body.dark-mode .sb-topnav {
-            background: rgba(15, 23, 42, 0.8) !important;
-            border: 1px solid rgba(71, 85, 105, 0.3);
+        .absen-actions {
+            display: flex; flex-direction: column; gap: 10px;
+            flex-shrink: 0;
+        }
+        .btn-absen {
+            padding: 11px 22px;
+            border-radius: 11px;
+            font-size: 13.5px; font-weight: 600;
+            font-family: 'DM Sans', sans-serif;
+            cursor: pointer; border: none;
+            transition: all 0.25s;
+            display: flex; align-items: center; gap: 8px;
+            white-space: nowrap;
+            text-decoration: none;
+        }
+        .btn-masuk {
+            background: linear-gradient(135deg, var(--gold), var(--br-400));
+            color: var(--br-950);
+            box-shadow: 0 4px 14px rgba(201,168,76,0.35);
+        }
+        .btn-masuk:hover { transform: translateY(-1px); box-shadow: 0 6px 18px rgba(201,168,76,0.45); }
+        .btn-keluar {
+            background: rgba(255,255,255,0.08);
+            color: var(--br-200);
+            border: 1px solid rgba(255,255,255,0.12);
+        }
+        .btn-keluar:hover { background: rgba(255,255,255,0.14); }
+        .btn-disabled {
+            background: rgba(255,255,255,0.04);
+            color: var(--br-600);
+            cursor: not-allowed;
+            border: 1px dashed rgba(201,168,76,0.15);
         }
 
-        body.dark-mode .brand-text {
-            color: #60a5fa;
+        /* No absen state */
+        .no-absen {
+            color: var(--br-300);
+            font-size: 14px;
+            font-style: italic;
         }
 
-        body.dark-mode #sidebarToggle {
-            background: rgba(59, 130, 246, 0.25);
-            border: 1px solid rgba(59, 130, 246, 0.5);
-            color: #60a5fa !important;
+        /* ── STAT CARDS ────────────────────────────────── */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        .stat-card {
+            background: #fff;
+            border: 1px solid var(--br-200);
+            border-radius: 14px;
+            padding: 18px 20px;
+            position: relative;
+            overflow: hidden;
+            animation: fadeUp 0.5s ease both;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .stat-card:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(74,44,20,0.1); }
+        .stat-card:nth-child(1) { animation-delay: 0.1s; }
+        .stat-card:nth-child(2) { animation-delay: 0.15s; }
+        .stat-card:nth-child(3) { animation-delay: 0.2s; }
+        .stat-card:nth-child(4) { animation-delay: 0.25s; }
+
+        .stat-card::after {
+            content: '';
+            position: absolute;
+            bottom: 0; left: 0; right: 0;
+            height: 3px;
+            border-radius: 0 0 14px 14px;
+        }
+        .stat-hadir::after     { background: linear-gradient(90deg, #4a7c47, #6bcf6b); }
+        .stat-terlambat::after { background: linear-gradient(90deg, #8b6020, var(--gold)); }
+        .stat-absen::after     { background: linear-gradient(90deg, #7a1f1f, #e88); }
+        .stat-laporan::after   { background: linear-gradient(90deg, var(--br-600), var(--br-400)); }
+
+        .stat-icon {
+            width: 40px; height: 40px;
+            border-radius: 10px;
+            display: flex; align-items: center; justify-content: center;
+            margin-bottom: 12px;
+        }
+        .stat-icon-ok      { background: var(--ok-t); color: var(--ok-c); }
+        .stat-icon-warn    { background: var(--warn-t); color: var(--warn-c); }
+        .stat-icon-danger  { background: var(--danger-t); color: var(--danger-c); }
+        .stat-icon-brown   { background: rgba(169,111,58,0.1); color: var(--br-500); }
+
+        .stat-num {
+            font-family: 'Playfair Display', serif;
+            font-size: 32px; font-weight: 700;
+            color: var(--br-900);
+            line-height: 1;
+            margin-bottom: 4px;
+        }
+        .stat-label {
+            font-size: 12.5px; font-weight: 500;
+            color: var(--br-500);
+        }
+        .stat-sub {
+            font-size: 11.5px; color: var(--br-400);
+            margin-top: 2px;
         }
 
-        body.dark-mode #sidebarToggle i {
-            color: #60a5fa;
+        /* ── BOTTOM GRID ───────────────────────────────── */
+        .bottom-grid {
+            display: grid;
+            grid-template-columns: 1fr 360px;
+            gap: 20px;
         }
 
-        body.dark-mode .navbar-nav .nav-link {
-            background: rgba(59, 130, 246, 0.25);
-            color: #60a5fa !important;
+        /* Panel */
+        .panel {
+            background: #fff;
+            border: 1px solid var(--br-200);
+            border-radius: 16px;
+            overflow: hidden;
+            animation: fadeUp 0.5s 0.3s ease both;
+        }
+        .panel-header {
+            padding: 18px 22px;
+            border-bottom: 1px solid var(--br-100);
+            display: flex; align-items: center; justify-content: space-between;
+        }
+        .panel-title {
+            font-family: 'Playfair Display', serif;
+            font-size: 16px; font-weight: 600;
+            color: var(--br-900);
+        }
+        .panel-link {
+            font-size: 12.5px; font-weight: 500;
+            color: var(--br-500);
+            text-decoration: none;
+            transition: color 0.2s;
+        }
+        .panel-link:hover { color: var(--br-700); }
+        .panel-body { padding: 8px 0; }
+
+        /* Riwayat rows */
+        .riwayat-row {
+            display: flex; align-items: center; gap: 14px;
+            padding: 12px 22px;
+            border-bottom: 1px solid var(--br-50);
+            transition: background 0.15s;
+        }
+        .riwayat-row:last-child { border-bottom: none; }
+        .riwayat-row:hover { background: var(--br-50); }
+        .rw-date-col {
+            flex-shrink: 0;
+            text-align: center;
+            width: 46px;
+        }
+        .rw-day {
+            font-family: 'Playfair Display', serif;
+            font-size: 20px; font-weight: 700;
+            color: var(--br-800);
+            line-height: 1;
+        }
+        .rw-month {
+            font-size: 10px; font-weight: 600;
+            color: var(--br-400);
+            text-transform: uppercase; letter-spacing: 0.5px;
+        }
+        .rw-divider {
+            width: 1px; height: 36px;
+            background: var(--br-200);
+            flex-shrink: 0;
+        }
+        .rw-info { flex: 1; }
+        .rw-shift {
+            font-size: 13.5px; font-weight: 600;
+            color: var(--br-800);
+            margin-bottom: 4px;
+        }
+        .rw-times {
+            font-size: 12px; color: var(--br-400);
+            font-family: 'DM Mono', monospace;
+        }
+        .rw-status { flex-shrink: 0; }
+
+        /* Empty state */
+        .empty-state {
+            padding: 36px 22px;
+            text-align: center;
+        }
+        .empty-icon {
+            font-size: 40px; margin-bottom: 10px; opacity: 0.3;
+        }
+        .empty-text {
+            font-size: 13.5px; color: var(--br-400);
         }
 
-        body.dark-mode .dropdown-menu {
-            background: rgba(30, 41, 59, 0.95);
-            border: 1px solid rgba(71, 85, 105, 0.5);
+        /* Quick actions panel */
+        .quick-panel {
+            animation-delay: 0.35s;
+        }
+        .quick-item {
+            display: flex; align-items: center; gap: 14px;
+            padding: 14px 22px;
+            border-bottom: 1px solid var(--br-50);
+            text-decoration: none;
+            transition: background 0.15s;
+            cursor: pointer;
+        }
+        .quick-item:last-child { border-bottom: none; }
+        .quick-item:hover { background: var(--br-50); }
+        .quick-icon {
+            width: 40px; height: 40px;
+            border-radius: 10px;
+            display: flex; align-items: center; justify-content: center;
+            flex-shrink: 0;
+        }
+        .qi-gold   { background: rgba(201,168,76,0.1); color: var(--gold); }
+        .qi-ok     { background: var(--ok-t); color: var(--ok-c); }
+        .qi-brown  { background: rgba(169,111,58,0.1); color: var(--br-500); }
+        .qi-info   { background: var(--info-t); color: var(--info-c); }
+
+        .quick-text h4 {
+            font-size: 13.5px; font-weight: 600;
+            color: var(--br-800);
+            margin-bottom: 2px;
+        }
+        .quick-text p {
+            font-size: 12px; color: var(--br-400);
+        }
+        .quick-arrow {
+            margin-left: auto;
+            color: var(--br-300);
         }
 
-        body.dark-mode .dropdown-item {
-            color: #e2e8f0;
+        /* Shift info card */
+        .shift-info-card {
+            background: linear-gradient(135deg, var(--br-100), var(--br-50));
+            border: 1px solid var(--br-200);
+            border-radius: 12px;
+            padding: 16px 20px;
+            margin: 10px 22px 14px;
+        }
+        .shift-info-title {
+            font-size: 11px; font-weight: 600;
+            text-transform: uppercase; letter-spacing: 1px;
+            color: var(--br-500);
+            margin-bottom: 10px;
+        }
+        .shift-row {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 7px 0;
+            border-bottom: 1px solid var(--br-200);
+            font-size: 13px;
+        }
+        .shift-row:last-child { border-bottom: none; }
+        .shift-name-label { font-weight: 500; color: var(--br-700); }
+        .shift-time-label {
+            font-family: 'DM Mono', monospace;
+            font-size: 12px; color: var(--br-500);
         }
 
-        body.dark-mode .dropdown-item:hover {
-            background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
-            color: white;
+        /* Pills */
+        .pill {
+            display: inline-flex; align-items: center;
+            padding: 3px 10px;
+            border-radius: 99px;
+            font-size: 11.5px; font-weight: 600;
+            line-height: 1.4;
         }
+        .pill-ok     { background: var(--ok-t); color: var(--ok-c); }
+        .pill-warn   { background: var(--warn-t); color: var(--warn-c); }
+        .pill-danger { background: var(--danger-t); color: var(--danger-c); }
+        .pill-info   { background: var(--info-t); color: var(--info-c); }
+        .pill-muted  { background: var(--muted-t); color: var(--muted-c); }
 
-        body.dark-mode .sb-sidenav-dark {
-            background: rgba(15, 23, 42, 0.8) !important;
-            border-right: 1px solid rgba(71, 85, 105, 0.3);
+        /* Modal overlay */
+        .modal-overlay {
+            display: none;
+            position: fixed; inset: 0;
+            background: rgba(28,15,5,0.6);
+            backdrop-filter: blur(4px);
+            z-index: 200;
+            align-items: center; justify-content: center;
         }
-
-        body.dark-mode .sb-sidenav-menu-heading {
-            color: #60a5fa !important;
+        .modal-overlay.open { display: flex; }
+        .modal-box {
+            background: var(--cream);
+            border-radius: 18px;
+            padding: 30px;
+            width: 100%; max-width: 440px;
+            margin: 20px;
+            animation: scaleIn 0.25s ease;
+            box-shadow: 0 20px 60px rgba(28,15,5,0.4);
         }
-
-        body.dark-mode .sb-sidenav-dark .sb-sidenav-menu .nav-link {
-            color: #e2e8f0;
+        @keyframes scaleIn {
+            from { opacity:0; transform:scale(0.94); }
+            to   { opacity:1; transform:scale(1); }
         }
-
-        body.dark-mode .sb-sidenav-dark .sb-sidenav-menu .nav-link:hover {
-            background: rgba(59, 130, 246, 0.25);
-            color: #60a5fa;
+        .modal-title {
+            font-family: 'Playfair Display', serif;
+            font-size: 20px; font-weight: 700;
+            color: var(--br-900); margin-bottom: 6px;
         }
-
-        body.dark-mode .sb-sidenav-dark .sb-sidenav-menu .nav-link.active {
-            background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
-            color: white;
+        .modal-sub { font-size: 13.5px; color: var(--br-500); margin-bottom: 22px; }
+        .modal-field { margin-bottom: 18px; }
+        .modal-label {
+            display: block; font-size: 13px; font-weight: 600;
+            color: var(--br-700); margin-bottom: 7px;
         }
-
-        body.dark-mode h1 {
-            color: #e2e8f0;
+        .modal-select, .modal-textarea {
+            width: 100%;
+            border: 1.5px solid var(--br-200);
+            border-radius: 10px;
+            padding: 10px 14px;
+            font-size: 14px; font-family: 'DM Sans', sans-serif;
+            color: var(--br-900);
+            background: #fff;
+            outline: none;
+            transition: border-color 0.25s, box-shadow 0.25s;
         }
-
-        body.dark-mode .breadcrumb-item.active {
-            color: #94a3b8;
+        .modal-select:focus, .modal-textarea:focus {
+            border-color: var(--br-500);
+            box-shadow: 0 0 0 3px rgba(169,111,58,0.1);
         }
-
-        body.dark-mode .stats-card {
-            background: rgba(30, 41, 59, 0.6);
-            border: 1px solid rgba(71, 85, 105, 0.3);
+        .modal-textarea { resize: vertical; min-height: 90px; }
+        .modal-actions {
+            display: flex; gap: 10px; justify-content: flex-end; margin-top: 22px;
         }
-
-        body.dark-mode .stats-card:hover {
-            background: rgba(30, 41, 59, 0.8);
+        .btn-cancel {
+            padding: 10px 20px; border-radius: 9px;
+            font-size: 13.5px; font-weight: 500;
+            font-family: 'DM Sans', sans-serif;
+            background: var(--br-100); border: 1px solid var(--br-200);
+            color: var(--br-600); cursor: pointer; transition: all 0.2s;
         }
-
-        body.dark-mode .card-title {
-            color: #94a3b8;
+        .btn-cancel:hover { background: var(--br-200); }
+        .btn-confirm {
+            padding: 10px 22px; border-radius: 9px;
+            font-size: 13.5px; font-weight: 600;
+            font-family: 'DM Sans', sans-serif;
+            background: linear-gradient(135deg, var(--br-600), var(--br-800));
+            color: var(--cream); border: none; cursor: pointer;
+            box-shadow: 0 4px 14px rgba(74,44,20,0.3);
+            transition: all 0.2s;
         }
-
-        body.dark-mode .section-title {
-            color: #e2e8f0;
-        }
-
-        body.dark-mode .table-container {
-            background: rgba(30, 41, 59, 0.6);
-            border: 1px solid rgba(71, 85, 105, 0.3);
-        }
-
-        body.dark-mode .table-title {
-            color: #e2e8f0;
-        }
-
-        body.dark-mode .table thead th {
-            background: rgba(59, 130, 246, 0.2);
-            color: #e2e8f0;
-        }
-
-        body.dark-mode .table tbody tr:hover {
-            background: rgba(59, 130, 246, 0.15);
-        }
-
-        body.dark-mode .table tbody td {
-            color: #e2e8f0;
-            border-bottom: 1px solid rgba(71, 85, 105, 0.3);
-        }
-
-        body.dark-mode footer {
-            background: rgba(15, 23, 42, 0.8) !important;
-            border-top: 1px solid rgba(71, 85, 105, 0.3);
-        }
-
-        body.dark-mode footer .text-muted {
-            color: #94a3b8 !important;
-        }
-
-        body.dark-mode .theme-label {
-            color: #e2e8f0;
-        }
-
-        body.dark-mode .dropdown-divider {
-            border-top: 1px solid rgba(71, 85, 105, 0.5);
-        }
-
-        body.dark-mode .dataTables_wrapper .dataTables_filter input {
-            background: rgba(30, 41, 59, 0.8);
-            border: 2px solid rgba(71, 85, 105, 0.5);
-            color: #e2e8f0;
-        }
-
-        body.dark-mode .dataTables_wrapper .dataTables_filter input:focus {
-            background: rgba(30, 41, 59, 0.9);
-            border-color: #3b82f6;
-        }
+        .btn-confirm:hover { transform: translateY(-1px); }
 
         /* Responsive */
+        @media (max-width: 1100px) {
+            .stats-grid { grid-template-columns: repeat(2, 1fr); }
+            .bottom-grid { grid-template-columns: 1fr; }
+        }
         @media (max-width: 768px) {
-            .brand-logo {
-                height: 32px;
-            }
-            
-            .brand-text {
-                font-size: 1.1rem;
-            }
-            
-            h1 {
-                font-size: 1.5rem;
-            }
-            
-            .section-title {
-                font-size: 1.1rem;
-            }
-            
-            .card-value {
-                font-size: 1.5rem;
-            }
-            
-            .container-fluid {
-                padding: 1rem;
-            }
-
-            .stats-card {
-                padding: 1.25rem;
-            }
-
-            .table-container {
-                padding: 1.25rem;
-            }
+            .sidebar { transform: translateX(-100%); }
+            .sidebar.open { transform: translateX(0); }
+            .main { margin-left: 0; }
+            .hamburger { display: block; }
+            .content { padding: 20px 16px 40px; }
+            .topbar { padding: 0 16px; }
+            .stats-grid { grid-template-columns: repeat(2, 1fr); gap: 12px; }
+            .absen-hero-inner { flex-direction: column; }
+        }
+        @media (max-width: 480px) {
+            .stats-grid { grid-template-columns: 1fr 1fr; }
         }
 
-        @media (max-width: 576px) {
-            .brand-logo {
-                height: 28px;
-            }
-            
-            .brand-text {
-                font-size: 1rem;
-            }
-            
-            .navbar-brand {
-                gap: 0.5rem;
-            }
-            
-            .stats-card {
-                padding: 1.25rem;
-            }
-            
-            .table-container {
-                padding: 1.25rem;
-            }
-
-            .card-value {
-                font-size: 1.35rem;
-            }
+        /* Overlay for mobile sidebar */
+        .sb-overlay {
+            display: none;
+            position: fixed; inset: 0;
+            background: rgba(0,0,0,0.5);
+            z-index: 90;
         }
+        .sb-overlay.open { display: block; }
+    </style>
+</head>
+<body>
 
-        /* Loading Animation */
-        @keyframes pulse {
-            0%, 100% {
-                opacity: 1;
-            }
-            50% {
-                opacity: 0.5;
-            }
-        }
+<!-- Sidebar overlay (mobile) -->
+<div class="sb-overlay" id="sbOverlay" onclick="toggleSidebar()"></div>
 
-        .loading {
-            animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-        }
-        </style>
-    </head>
-    <body class="sb-nav-fixed">
-        <nav class="sb-topnav navbar navbar-expand navbar-light">
-            <a class="navbar-brand" href="dashboard.php">
-                <img src="assets/img/Setjen_DPDRI.png" alt="Logo SELARAS" class="brand-logo">
-                <span class="brand-text">SELARAS</span>
-            </a>
-            <button class="btn btn-link btn-sm ms-auto me-3" id="sidebarToggle" aria-label="Toggle Navigation"><i class="fas fa-bars"></i></button>
-            <ul class="navbar-nav">
-                <li class="nav-item dropdown">
-                    <a class="nav-link dropdown-toggle" id="userDropdown" href="#" role="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false" aria-label="User Menu"><i class="fas fa-user fa-fw"></i></a>
-                    <div class="dropdown-menu dropdown-menu-right" aria-labelledby="userDropdown">
-                        <a class="dropdown-item" href="profil.php">
-                            <i class="bi bi-person-circle me-2"></i> Profil 
-                            <span class="role-badge role-<?php echo strtolower(str_replace('_', '-', $user_role)); ?>">
-                                <?php echo getRoleName($user_role); ?>
-                            </span>
-                        </a>
-                        <div class="dropdown-divider"></div>
-                        <div class="dropdown-item theme-toggle-container">
-                            <div class="d-flex align-items-center justify-content-between">
-                                <span class="theme-label">
-                                    <i class="bi bi-moon-stars-fill"></i> Mode Gelap
-                                </span>
-                                <label class="theme-switch">
-                                    <input type="checkbox" id="themeToggle">
-                                    <span class="theme-slider"></span>
-                                </label>
-                            </div>
-                        </div>
-                        <div class="dropdown-divider"></div>
-                        <a class="dropdown-item" href="logout.php">
-                            <i class="bi bi-box-arrow-right me-2"></i> Logout
-                        </a>
-                    </div>
-                </li>
-            </ul>
-        </nav>
-        
-        <div id="layoutSidenav">
-            <div id="layoutSidenav_nav">
-                <nav class="sb-sidenav accordion sb-sidenav-dark" id="sidenavAccordion">
-                    <div class="sb-sidenav-menu">
-                        <div class="nav">
-                            <div class="sb-sidenav-menu-heading">Menu Utama</div>
-                            <a class="nav-link active" href="dashboard.php">
-                                <div class="sb-nav-link-icon"><i class="bi bi-speedometer2"></i></div>
-                                Dashboard
-                            </a>
-                            
-                            <!-- Stock Barang -->
-                            <a class="nav-link collapsed" href="#" data-toggle="collapse" data-target="#collapseStock" aria-expanded="false" aria-controls="collapseStock">
-                                <div class="sb-nav-link-icon"><i class="bi bi-box-seam"></i></div>
-                                Stok Barang
-                                <div class="sb-sidenav-collapse-arrow"><i class="fas fa-chevron-down"></i></div>
-                            </a>
-                            <div class="collapse" id="collapseStock" aria-labelledby="headingStock" data-parent="#sidenavAccordion">
-                                <nav class="sb-sidenav-menu-nested nav">
-                                    <?php if(canRead('atk')): ?>
-                                    <a class="nav-link" href="index.php">
-                                        <div class="sb-nav-link-icon"><i class="bi bi-file-text"></i></div>
-                                        Stok Barang ATK
-                                    </a>
-                                    <?php endif; ?>
-                                    <?php if(canRead('non_atk')): ?>
-                                    <a class="nav-link" href="index_nonatk.php">
-                                        <div class="sb-nav-link-icon"><i class="bi bi-file-earmark"></i></div>
-                                        Stok Barang Non ATK
-                                    </a>
-                                    <?php endif; ?>
-                                </nav>
-                            </div>
-                            
-                            <!-- Pemrosesan ATK - Hanya untuk yang punya akses ATK -->
-                            <?php if(canRead('atk')): ?>
-                            <a class="nav-link collapsed" href="#" data-toggle="collapse" data-target="#collapseATK" aria-expanded="false" aria-controls="collapseATK">
-                                <div class="sb-nav-link-icon"><i class="bi bi-gear-fill"></i></div>
-                                Pemrosesan ATK
-                                <div class="sb-sidenav-collapse-arrow"><i class="fas fa-chevron-down"></i></div>
-                            </a>
-                            <div class="collapse" id="collapseATK" aria-labelledby="headingATK" data-parent="#sidenavAccordion">
-                                <nav class="sb-sidenav-menu-nested nav">
-                                    <a class="nav-link" href="masuk_atk.php">
-                                        <div class="sb-nav-link-icon"><i class="bi bi-arrow-down-circle-fill"></i></div>
-                                        Barang Masuk
-                                    </a>
-                                    <a class="nav-link" href="keluar_atk.php">
-                                        <div class="sb-nav-link-icon"><i class="bi bi-arrow-up-circle-fill"></i></div>
-                                        Barang Keluar
-                                    </a>
-                                </nav>
-                            </div>
-                            <?php endif; ?>
-                            
-                            <!-- Pemrosesan Non ATK - Hanya untuk yang punya akses Non-ATK -->
-                            <?php if(canRead('non_atk')): ?>
-                            <a class="nav-link collapsed" href="#" data-toggle="collapse" data-target="#collapseNonATK" aria-expanded="false" aria-controls="collapseNonATK">
-                                <div class="sb-nav-link-icon"><i class="bi bi-gear-fill"></i></div>
-                                Pemrosesan Non ATK
-                                <div class="sb-sidenav-collapse-arrow"><i class="fas fa-chevron-down"></i></div>
-                            </a>
-                            <div class="collapse" id="collapseNonATK" aria-labelledby="headingNonATK" data-parent="#sidenavAccordion">
-                                <nav class="sb-sidenav-menu-nested nav">
-                                    <a class="nav-link" href="masuk_nonatk.php">
-                                        <div class="sb-nav-link-icon"><i class="bi bi-arrow-down-circle-fill"></i></div>
-                                        Barang Masuk
-                                    </a>
-                                    <a class="nav-link" href="keluar_nonatk.php">
-                                        <div class="sb-nav-link-icon"><i class="bi bi-arrow-up-circle-fill"></i></div>
-                                        Barang Keluar
-                                    </a>
-                                </nav>
-                            </div>
-                            <?php endif; ?>
-                            
-                            <div class="sb-sidenav-menu-heading">Akun</div>
-                            <a class="nav-link" href="profil.php">
-                                <div class="sb-nav-link-icon"><i class="bi bi-person-circle"></i></div>
-                                Profil Pengguna
-                            </a>
-                        </div>
-                    </div>
-                </nav>
-            </div>
-
-            <div id="layoutSidenav_content">
-                <main>
-                    <div class="container-fluid">
-                        <h1><i class="bi bi-speedometer2"></i> Dashboard</h1>
-                        <ol class="breadcrumb mb-4">
-                            <li class="breadcrumb-item active">Dashboard</li>
-                        </ol>
-                        
-                        <!-- Welcome Banner -->
-                        <div class="welcome-banner">
-                            <h3><i class="bi bi-hand-thumbs-up"></i> Selamat Datang, <?=htmlspecialchars($user_name);?>!</h3>
-                            <p>Anda login sebagai: <span class="role-badge"><?=getRoleName($user_role);?></span></p>
-                        </div>
-                        
-                        <!-- Ringkasan Keseluruhan - Hanya jika user punya akses ke keduanya -->
-                        <?php if(canRead('atk') && canRead('non_atk')): ?>
-                        <h3 class="section-title">
-                            <i class="bi bi-graph-up-arrow"></i>
-                            Ringkasan Keseluruhan
-                        </h3>
-                        <div class="section-divider"></div>
-                        <div class="row">
-                            <div class="col-xl-4 col-md-6 mb-4">
-                                <div class="stats-card">
-                                    <div class="card-icon icon-blue">
-                                        <i class="bi bi-box-seam"></i>
-                                    </div>
-                                    <div class="card-title">Total Stok Semua Barang</div>
-                                    <h2 class="card-value"><?=number_format($totalstok_all);?> Unit</h2>
-                                    <small class="text-muted">ATK: <?=number_format($totalstok_atk);?> | Non-ATK: <?=number_format($totalstok_nonatk);?></small>
-                                </div>
-                            </div>
-                            
-                            <div class="col-xl-4 col-md-6 mb-4">
-                                <div class="stats-card">
-                                    <div class="card-icon icon-green">
-                                        <i class="bi bi-arrow-down-circle"></i>
-                                    </div>
-                                    <div class="card-title">Total Barang Masuk (6 Bulan)</div>
-                                    <h2 class="card-value"><?=number_format($totalstokmasuk_all);?> Unit</h2>
-                                    <small class="text-muted">ATK: <?=number_format($totalstokmasuk_atk);?> | Non-ATK: <?=number_format($totalstokmasuk_nonatk);?></small>
-                                </div>
-                            </div>
-                            
-                            <div class="col-xl-4 col-md-6 mb-4">
-                                <div class="stats-card">
-                                    <div class="card-icon icon-orange">
-                                        <i class="bi bi-arrow-up-circle"></i>
-                                    </div>
-                                    <div class="card-title">Total Barang Keluar (6 Bulan)</div>
-                                    <h2 class="card-value"><?=number_format($totalstokkeluar_all);?> Unit</h2>
-                                    <small class="text-muted">ATK: <?=number_format($totalstokkeluar_atk);?> | Non-ATK: <?=number_format($totalstokkeluar_nonatk);?></small>
-                                </div>
-                            </div>
-                        </div>
-                        <?php endif; ?>
-
-                        <!-- Statistik Barang ATK - Hanya jika user punya akses -->
-                        <?php if(canRead('atk')): ?>
-                        <h3 class="section-title">
-                            <i class="bi bi-file-text"></i>
-                            Statistik Barang ATK
-                        </h3>
-                        <div class="section-divider"></div>
-                        <div class="row">
-                            <div class="col-xl-4 col-md-6 mb-4">
-                                <div class="stats-card">
-                                    <div class="card-icon icon-purple">
-                                        <i class="bi bi-box"></i>
-                                    </div>
-                                    <div class="card-title">Stok Akhir ATK</div>
-                                    <h2 class="card-value"><?=number_format($totalstok_atk);?> Unit</h2>
-                                    <a href="index.php" class="card-link">
-                                        Lihat Detail 
-                                        <i class="bi bi-arrow-right"></i>
-                                    </a>
-                                </div>
-                            </div>
-                            
-                            <div class="col-xl-4 col-md-6 mb-4">
-                                <div class="stats-card">
-                                    <div class="card-icon icon-green">
-                                        <i class="bi bi-arrow-down-circle"></i>
-                                    </div>
-                                    <div class="card-title">Barang Masuk ATK (6 Bulan)</div>
-                                    <h2 class="card-value"><?=number_format($totalstokmasuk_atk);?> Unit</h2>
-                                    <a href="masuk_atk.php" class="card-link">
-                                        Lihat Detail 
-                                        <i class="bi bi-arrow-right"></i>
-                                    </a>
-                                </div>
-                            </div>
-                            
-                            <div class="col-xl-4 col-md-6 mb-4">
-                                <div class="stats-card">
-                                    <div class="card-icon icon-orange">
-                                        <i class="bi bi-arrow-up-circle"></i>
-                                    </div>
-                                    <div class="card-title">Barang Keluar ATK (6 Bulan)</div>
-                                    <h2 class="card-value"><?=number_format($totalstokkeluar_atk);?> Unit</h2>
-                                    <a href="keluar_atk.php" class="card-link">
-                                        Lihat Detail 
-                                        <i class="bi bi-arrow-right"></i>
-                                    </a>
-                                </div>
-                            </div>
-                        </div>
-                        <?php endif; ?>
-
-                        <!-- Statistik Barang Non-ATK - Hanya jika user punya akses -->
-                        <?php if(canRead('non_atk')): ?>
-                        <h3 class="section-title">
-                            <i class="bi bi-file-earmark"></i>
-                            Statistik Barang Non-ATK
-                        </h3>
-                        <div class="section-divider"></div>
-                        <div class="row">
-                            <div class="col-xl-4 col-md-6 mb-4">
-                                <div class="stats-card">
-                                    <div class="card-icon icon-pink">
-                                        <i class="bi bi-box"></i>
-                                    </div>
-                                    <div class="card-title">Stok Akhir Non-ATK</div>
-                                    <h2 class="card-value"><?=number_format($totalstok_nonatk);?> Unit</h2>
-                                    <a href="index_nonatk.php" class="card-link">
-                                        Lihat Detail 
-                                        <i class="bi bi-arrow-right"></i>
-                                    </a>
-                                </div>
-                            </div>
-                            
-                            <div class="col-xl-4 col-md-6 mb-4">
-                                <div class="stats-card">
-                                    <div class="card-icon icon-cyan">
-                                        <i class="bi bi-arrow-down-circle"></i>
-                                    </div>
-                                    <div class="card-title">Barang Masuk Non-ATK (6 Bulan)</div>
-                                    <h2 class="card-value"><?=number_format($totalstokmasuk_nonatk);?> Unit</h2>
-                                    <a href="masuk_nonatk.php" class="card-link">
-                                        Lihat Detail 
-                                        <i class="bi bi-arrow-right"></i>
-                                    </a>
-                                </div>
-                            </div>
-                            
-                            <div class="col-xl-4 col-md-6 mb-4">
-                                <div class="stats-card">
-                                    <div class="card-icon icon-orange">
-                                        <i class="bi bi-arrow-up-circle"></i>
-                                    </div>
-                                    <div class="card-title">Barang Keluar Non-ATK (6 Bulan)</div>
-                                    <h2 class="card-value"><?=number_format($totalstokkeluar_nonatk);?> Unit</h2>
-                                    <a href="keluar_nonatk.php" class="card-link">
-                                        Lihat Detail 
-                                        <i class="bi bi-arrow-right"></i>
-                                    </a>
-                                </div>
-                            </div>
-                        </div>
-                        <?php endif; ?>
-
-                        <!-- Tabel Riwayat Barang ATK - Hanya jika user punya akses -->
-                        <?php if(canRead('atk')): ?>
-                        <h3 class="section-title">
-                            <i class="bi bi-clock-history"></i>
-                            Riwayat Pengambilan Barang Terbaru
-                        </h3>
-                        <div class="section-divider"></div>
-                        
-                        <div class="table-container">
-                            <h4 class="table-title">
-                                <i class="bi bi-file-text"></i> 
-                                Barang ATK
-                            </h4>
-                            <div class="table-responsive">
-                                <table class="table table-hover" id="dataTableATK">
-                                    <thead>
-                                        <tr>
-                                            <th>No</th>
-                                            <th>Penerima</th>
-                                            <th>Nama Barang</th>
-                                            <th>Jumlah</th>
-                                            <th>Tanggal</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        <?php
-                                        $ambilsemuadatakeluar_atk = mysqli_query($conn, "
-                                            SELECT k.*, s.namabarang, s.satuan 
-                                            FROM keluar k 
-                                            JOIN stok s ON s.idbarang = k.idbarang 
-                                            ORDER BY k.tanggal DESC 
-                                            LIMIT 10
-                                        ");
-                                        $i = 1;
-                                        while($data=mysqli_fetch_array($ambilsemuadatakeluar_atk)){
-                                            $penerima = htmlspecialchars($data['penerima']);
-                                            $namabarang = htmlspecialchars($data['namabarang']);
-                                            $qty = $data['qty'];
-                                            $satuan = htmlspecialchars($data['satuan']);
-                                            $tanggal = date('d-m-Y', strtotime($data['tanggal']));
-                                        ?>
-                                        <tr>
-                                            <td><?=$i++;?></td>
-                                            <td><strong><?=$penerima;?></strong></td>
-                                            <td><?=$namabarang;?></td>
-                                            <td>
-                                                <span class="badge badge-primary">
-                                                    <i class="bi bi-box"></i>
-                                                    <?=$qty;?> <?=$satuan;?>
-                                                </span>
-                                            </td>
-                                            <td><?=$tanggal;?></td>
-                                        </tr>
-                                        <?php
-                                        }
-                                        ?>
-                                    </tbody>
-                                </table>
-                            </div>
-                        </div>
-                        <?php endif; ?>
-
-                        <!-- Tabel Riwayat Barang Non-ATK - Hanya jika user punya akses -->
-                        <?php if(canRead('non_atk')): ?>
-                        <div class="table-container">
-                            <h4 class="table-title">
-                                <i class="bi bi-file-earmark"></i> 
-                                Barang Non-ATK
-                            </h4>
-                            <div class="table-responsive">
-                                <table class="table table-hover" id="dataTableNonATK">
-                                    <thead>
-                                        <tr>
-                                            <th>No</th>
-                                            <th>Penerima</th>
-                                            <th>Nama Barang</th>
-                                            <th>Jumlah</th>
-                                            <th>Tanggal</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        <?php
-                                        $ambilsemuadatakeluar_nonatk = mysqli_query($conn, "
-                                            SELECT k.*, s.namabarang, s.satuan 
-                                            FROM keluar_non_atk k 
-                                            JOIN stok_non_atk s ON s.idbarang = k.idbarang 
-                                            ORDER BY k.tanggal DESC 
-                                            LIMIT 10
-                                        ");
-                                        $i = 1;
-                                        while($data=mysqli_fetch_array($ambilsemuadatakeluar_nonatk)){
-                                            $penerima = htmlspecialchars($data['penerima']);
-                                            $namabarang = htmlspecialchars($data['namabarang']);
-                                            $qty = $data['qty'];
-                                            $satuan = htmlspecialchars($data['satuan']);
-                                            $tanggal = date('d-m-Y', strtotime($data['tanggal']));
-                                        ?>
-                                        <tr>
-                                            <td><?=$i++;?></td>
-                                            <td><strong><?=$penerima;?></strong></td>
-                                            <td><?=$namabarang;?></td>
-                                            <td>
-                                                <span class="badge badge-info">
-                                                    <i class="bi bi-box"></i>
-                                                    <?=$qty;?> <?=$satuan;?>
-                                                </span>
-                                            </td>
-                                            <td><?=$tanggal;?></td>
-                                        </tr>
-                                        <?php
-                                        }
-                                        ?>
-                                    </tbody>
-                                </table>
-                            </div>
-                        </div>
-                        <?php endif; ?>
-                    </div>
-                </main>
-                
-                <footer class="py-4 bg-light mt-auto">
-                    <div class="container-fluid">
-                        <div class="d-flex align-items-center justify-content-between small">
-                        <div class="text-muted">Copyright &copy; 2025 Awal Cahyo &mdash; DPD RI Provinsi Kalimantan Barat</div>                        </div>
-                    </div>
-                </footer>
+<!-- ── SIDEBAR ─────────────────────────────────────────────────────────────── -->
+<aside class="sidebar" id="sidebar">
+    <div class="sb-brand">
+        <div class="sb-logo-row">
+            <div class="sb-logo-mark">A</div>
+            <div>
+                <div class="sb-logo-text">Absensi<br>Pamdal</div>
             </div>
         </div>
-        
-        <script src="https://code.jquery.com/jquery-3.5.1.slim.min.js" crossorigin="anonymous"></script>
-        <script src="https://cdn.jsdelivr.net/npm/bootstrap@4.5.3/dist/js/bootstrap.bundle.min.js" crossorigin="anonymous"></script>
-        <script src="js/scripts.js"></script>
-        <script src="https://cdn.datatables.net/1.10.20/js/jquery.dataTables.min.js" crossorigin="anonymous"></script>
-        <script src="https://cdn.datatables.net/1.10.20/js/dataTables.bootstrap4.min.js" crossorigin="anonymous"></script>
-        <script>
-            $(document).ready(function() {
-                <?php if(canRead('atk')): ?>
-                // Inisialisasi DataTable untuk ATK
-                $('#dataTableATK').DataTable({
-                    "language": {
-                        "url": "//cdn.datatables.net/plug-ins/1.10.20/i18n/Indonesian.json"
-                    },
-                    "order": [[4, "desc"]], // Urutkan berdasarkan tanggal (kolom ke-5) descending
-                    "pageLength": 5,
-                    "responsive": true
-                });
-                <?php endif; ?>
+    </div>
 
-                <?php if(canRead('non_atk')): ?>
-                // Inisialisasi DataTable untuk Non-ATK
-                $('#dataTableNonATK').DataTable({
-                    "language": {
-                        "url": "//cdn.datatables.net/plug-ins/1.10.20/i18n/Indonesian.json"
-                    },
-                    "order": [[4, "desc"]], // Urutkan berdasarkan tanggal (kolom ke-5) descending
-                    "pageLength": 5,
-                    "responsive": true
-                });
-                <?php endif; ?>
-            });
-            
-            // Dark Mode Toggle
-            const themeToggle = document.getElementById('themeToggle');
-            const body = document.body;
-            
-            // Cek preferensi tema dari localStorage
-            const currentTheme = localStorage.getItem('theme');
-            if (currentTheme === 'dark') {
-                body.classList.add('dark-mode');
-                themeToggle.checked = true;
-            }
-            
-            // Event listener untuk toggle
-            themeToggle.addEventListener('change', function() {
-                if (this.checked) {
-                    body.classList.add('dark-mode');
-                    localStorage.setItem('theme', 'dark');
-                } else {
-                    body.classList.remove('dark-mode');
-                    localStorage.setItem('theme', 'light');
-                }
-            });
-            
-            // Update icon based on theme
-            themeToggle.addEventListener('change', function() {
-                const icon = document.querySelector('.theme-label i');
-                if (this.checked) {
-                    icon.classList.remove('bi-moon-stars-fill');
-                    icon.classList.add('bi-sun-fill');
-                } else {
-                    icon.classList.remove('bi-sun-fill');
-                    icon.classList.add('bi-moon-stars-fill');
-                }
-            });
-            
-            // Set initial icon
-            if (currentTheme === 'dark') {
-                const icon = document.querySelector('.theme-label i');
-                icon.classList.remove('bi-moon-stars-fill');
-                icon.classList.add('bi-sun-fill');
-            }
-        </script>
-    </body>
+    <div class="sb-user">
+        <div class="sb-avatar"><?= mb_strtoupper(mb_substr($nama, 0, 1)) ?></div>
+        <div class="sb-user-name"><?= htmlspecialchars($nama) ?></div>
+        <div class="sb-user-role">Pamdal</div>
+    </div>
+
+    <nav class="sb-nav">
+        <div class="sb-section-label">Utama</div>
+        <a href="dashboard.php" class="nav-item active">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+            Dashboard
+        </a>
+        <a href="absensi.php" class="nav-item">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
+            Absensi
+        </a>
+
+        <div class="sb-section-label">Laporan</div>
+        <a href="laporan.php" class="nav-item">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14,2 14,8 20,8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10,9 9,9 8,9"/></svg>
+            Laporan Harian
+            <?php if ($laporanHariIni && $laporanHariIni['status'] === 'revisi'): ?>
+            <span class="nav-badge">!</span>
+            <?php endif; ?>
+        </a>
+        <a href="riwayat.php" class="nav-item">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12,6 12,12 16,14"/></svg>
+            Riwayat
+        </a>
+
+        <div class="sb-section-label">Lainnya</div>
+        <a href="profil.php" class="nav-item">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+            Profil Saya
+        </a>
+    </nav>
+
+    <div class="sb-footer">
+        <a href="logout.php" class="btn-logout">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16,17 21,12 16,7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+            Keluar
+        </a>
+    </div>
+</aside>
+
+<!-- ── MAIN ────────────────────────────────────────────────────────────────── -->
+<main class="main">
+
+    <!-- Topbar -->
+    <div class="topbar">
+        <div class="topbar-left">
+            <button class="hamburger" onclick="toggleSidebar()" aria-label="Menu">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+            </button>
+            <span class="topbar-date"><strong><?= $hariIni ?></strong></span>
+        </div>
+        <div class="topbar-right">
+            <span class="topbar-time" id="liveClock">--:--:--</span>
+        </div>
+    </div>
+
+    <!-- Content -->
+    <div class="content">
+
+        <div class="page-head">
+            <p class="page-eyebrow">Selamat datang kembali</p>
+            <h1 class="page-title"><?= htmlspecialchars(explode(' ', $nama)[0]) ?>, <span>siap bertugas?</span></h1>
+        </div>
+
+        <!-- Absen Hero Card -->
+        <div class="absen-hero">
+            <div class="absen-hero-inner">
+                <div class="absen-status-col">
+                    <p class="absen-label">Status Absen Hari Ini</p>
+
+                    <?php if ($absenHariIni): ?>
+                        <div class="absen-shift-name"><?= htmlspecialchars($absenHariIni['nama_shift']) ?></div>
+                        <div class="absen-time-row">
+                            <span class="absen-time-item">
+                                Masuk &nbsp;<strong><?= $absenHariIni['waktu_masuk'] ? date('H:i', strtotime($absenHariIni['waktu_masuk'])) : '–' ?></strong>
+                            </span>
+                            <span class="absen-divider">·</span>
+                            <span class="absen-time-item">
+                                Keluar &nbsp;<strong><?= $absenHariIni['waktu_keluar'] ? date('H:i', strtotime($absenHariIni['waktu_keluar'])) : '–' ?></strong>
+                            </span>
+                        </div>
+                        <div class="absen-badges-row">
+                            <?= badgeStatus($absenHariIni['status_masuk']) ?>
+                            <?php if ($absenHariIni['status_keluar']): ?>
+                                <?= badgeStatus($absenHariIni['status_keluar']) ?>
+                            <?php endif; ?>
+                            <?= laporanBadge($laporanHariIni) ?>
+                        </div>
+                    <?php else: ?>
+                        <p class="no-absen">Anda belum melakukan absen hari ini.</p>
+                        <div class="absen-badges-row">
+                            <span class="pill pill-muted">Belum Absen</span>
+                        </div>
+                    <?php endif; ?>
+                </div>
+
+                <div class="absen-actions">
+                    <?php if (!$absenHariIni): ?>
+                        <button class="btn-absen btn-masuk" onclick="openModalMasuk()">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M15 3h4a2 2 0 012 2v14a2 2 0 01-2 2h-4"/><polyline points="10,17 15,12 10,7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
+                            Absen Masuk
+                        </button>
+                    <?php elseif (!$absenHariIni['waktu_keluar']): ?>
+                        <button class="btn-absen btn-masuk" disabled style="cursor:default;opacity:0.5">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 11l3 3L22 4"/></svg>
+                            Sudah Masuk
+                        </button>
+                        <button class="btn-absen btn-keluar" onclick="openModalKeluar()">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16,17 21,12 16,7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+                            Absen Keluar
+                        </button>
+                    <?php else: ?>
+                        <span class="btn-absen btn-disabled">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/></svg>
+                            Absen Selesai
+                        </span>
+                        <?php if (!$laporanHariIni || $laporanHariIni['status'] === 'draft'): ?>
+                        <a href="laporan.php?aksi=buat" class="btn-absen btn-keluar">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                            Buat Laporan
+                        </a>
+                        <?php endif; ?>
+                    <?php endif; ?>
+                </div>
+            </div>
+        </div>
+
+        <!-- Stats -->
+        <div class="stats-grid">
+            <div class="stat-card stat-hadir">
+                <div class="stat-icon stat-icon-ok">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
+                </div>
+                <div class="stat-num"><?= $statBulan['hadir'] ?? 0 ?></div>
+                <div class="stat-label">Hadir Tepat Waktu</div>
+                <div class="stat-sub">Bulan <?= date('F Y') ?></div>
+            </div>
+            <div class="stat-card stat-terlambat">
+                <div class="stat-icon stat-icon-warn">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12,6 12,12 16,14"/></svg>
+                </div>
+                <div class="stat-num"><?= ($statBulan['terlambat'] ?? 0) + ($statBulan['sangat_terlambat'] ?? 0) ?></div>
+                <div class="stat-label">Terlambat</div>
+                <div class="stat-sub">Toleransi <?= $toleransi ?> menit</div>
+            </div>
+            <div class="stat-card stat-absen">
+                <div class="stat-icon stat-icon-danger">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+                </div>
+                <div class="stat-num"><?= $statBulan['tidak_hadir'] ?? 0 ?></div>
+                <div class="stat-label">Tidak Hadir</div>
+                <div class="stat-sub">Total absen tidak masuk</div>
+            </div>
+            <div class="stat-card stat-laporan">
+                <div class="stat-icon stat-icon-brown">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14,2 14,8 20,8"/></svg>
+                </div>
+                <div class="stat-num"><?= $statBulan['total'] ?? 0 ?></div>
+                <div class="stat-label">Total Shift</div>
+                <div class="stat-sub">Dijalani bulan ini</div>
+            </div>
+        </div>
+
+        <!-- Bottom Grid -->
+        <div class="bottom-grid">
+
+            <!-- Riwayat Absensi -->
+            <div class="panel">
+                <div class="panel-header">
+                    <h2 class="panel-title">Riwayat Absensi Terakhir</h2>
+                    <a href="riwayat.php" class="panel-link">Lihat semua →</a>
+                </div>
+                <div class="panel-body">
+                    <?php if (empty($riwayat)): ?>
+                    <div class="empty-state">
+                        <div class="empty-icon">📋</div>
+                        <p class="empty-text">Belum ada riwayat absensi.</p>
+                    </div>
+                    <?php else: ?>
+                    <?php foreach ($riwayat as $r): ?>
+                    <div class="riwayat-row">
+                        <div class="rw-date-col">
+                            <div class="rw-day"><?= date('d', strtotime($r['tanggal'])) ?></div>
+                            <div class="rw-month"><?= date('M', strtotime($r['tanggal'])) ?></div>
+                        </div>
+                        <div class="rw-divider"></div>
+                        <div class="rw-info">
+                            <div class="rw-shift"><?= htmlspecialchars($r['nama_shift']) ?></div>
+                            <div class="rw-times">
+                                <?= $r['waktu_masuk'] ? date('H:i', strtotime($r['waktu_masuk'])) : '--:--' ?>
+                                &nbsp;→&nbsp;
+                                <?= $r['waktu_keluar'] ? date('H:i', strtotime($r['waktu_keluar'])) : '--:--' ?>
+                            </div>
+                        </div>
+                        <div class="rw-status">
+                            <?= badgeStatus($r['status_masuk']) ?>
+                        </div>
+                    </div>
+                    <?php endforeach; ?>
+                    <?php endif; ?>
+                </div>
+            </div>
+
+            <!-- Right col -->
+            <div style="display:flex;flex-direction:column;gap:20px;">
+
+                <!-- Quick Actions -->
+                <div class="panel quick-panel">
+                    <div class="panel-header">
+                        <h2 class="panel-title">Aksi Cepat</h2>
+                    </div>
+                    <div class="panel-body">
+                        <a href="laporan.php?aksi=buat" class="quick-item">
+                            <div class="quick-icon qi-gold">
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                            </div>
+                            <div class="quick-text">
+                                <h4>Buat Laporan Harian</h4>
+                                <p>Submit laporan shift hari ini</p>
+                            </div>
+                            <span class="quick-arrow">→</span>
+                        </a>
+                        <a href="absensi.php?aksi=tukar" class="quick-item">
+                            <div class="quick-icon qi-ok">
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="17,1 21,5 17,9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7,23 3,19 7,15"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>
+                            </div>
+                            <div class="quick-text">
+                                <h4>Tukar Shift</h4>
+                                <p>Ajukan penukaran jadwal shift</p>
+                            </div>
+                            <span class="quick-arrow">→</span>
+                        </a>
+                        <a href="riwayat.php" class="quick-item">
+                            <div class="quick-icon qi-brown">
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                            </div>
+                            <div class="quick-text">
+                                <h4>Riwayat Lengkap</h4>
+                                <p>Lihat semua catatan absensi</p>
+                            </div>
+                            <span class="quick-arrow">→</span>
+                        </a>
+                        <a href="profil.php" class="quick-item">
+                            <div class="quick-icon qi-info">
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                            </div>
+                            <div class="quick-text">
+                                <h4>Profil Saya</h4>
+                                <p>Edit data & ganti password</p>
+                            </div>
+                            <span class="quick-arrow">→</span>
+                        </a>
+                    </div>
+                </div>
+
+                <!-- Info Shift -->
+                <div class="panel" style="animation-delay:0.4s">
+                    <div class="panel-header">
+                        <h2 class="panel-title">Jadwal Shift</h2>
+                    </div>
+                    <div class="shift-info-card">
+                        <div class="shift-info-title">Waktu operasional</div>
+                        <?php foreach ($shifts as $s): ?>
+                        <div class="shift-row">
+                            <span class="shift-name-label"><?= htmlspecialchars($s['nama_shift']) ?></span>
+                            <span class="shift-time-label">
+                                <?= substr($s['jam_masuk'],0,5) ?> – <?= substr($s['jam_keluar'],0,5) ?>
+                                <?= $s['lintas_hari'] ? '<span style="font-size:10px;color:var(--br-400)">&nbsp;(+1 hari)</span>' : '' ?>
+                            </span>
+                        </div>
+                        <?php endforeach; ?>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+
+    </div><!-- /content -->
+</main>
+
+<!-- ── MODAL ABSEN MASUK ──────────────────────────────────────────────────── -->
+<div class="modal-overlay" id="modalMasuk">
+    <div class="modal-box">
+        <h3 class="modal-title">Absen Masuk</h3>
+        <p class="modal-sub">Pilih shift dan konfirmasi kehadiran Anda hari ini.</p>
+        <form method="post" action="proses_absen.php">
+            <input type="hidden" name="aksi" value="masuk">
+            <div class="modal-field">
+                <label class="modal-label" for="pilihShift">Shift Hari Ini</label>
+                <select class="modal-select" id="pilihShift" name="shift_id" required>
+                    <option value="">— Pilih shift —</option>
+                    <?php foreach ($shifts as $s): ?>
+                    <option value="<?= $s['id'] ?>">
+                        <?= htmlspecialchars($s['nama_shift']) ?> (<?= substr($s['jam_masuk'],0,5) ?> – <?= substr($s['jam_keluar'],0,5) ?>)
+                    </option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+            <div class="modal-field">
+                <label class="modal-label" for="ketMasuk">Keterangan (opsional)</label>
+                <textarea class="modal-textarea" id="ketMasuk" name="keterangan" placeholder="Tambahkan catatan jika perlu..."></textarea>
+            </div>
+            <div class="modal-actions">
+                <button type="button" class="btn-cancel" onclick="closeModal('modalMasuk')">Batal</button>
+                <button type="submit" class="btn-confirm">Konfirmasi Masuk</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- ── MODAL ABSEN KELUAR ─────────────────────────────────────────────────── -->
+<div class="modal-overlay" id="modalKeluar">
+    <div class="modal-box">
+        <h3 class="modal-title">Absen Keluar</h3>
+        <p class="modal-sub">Konfirmasi bahwa Anda telah selesai bertugas.</p>
+        <form method="post" action="proses_absen.php">
+            <input type="hidden" name="aksi" value="keluar">
+            <?php if ($absenHariIni): ?>
+            <input type="hidden" name="absensi_id" value="<?= $absenHariIni['id'] ?>">
+            <?php endif; ?>
+            <div class="modal-field">
+                <label class="modal-label" for="statusKeluar">Status Keluar</label>
+                <select class="modal-select" id="statusKeluar" name="status_keluar" required onchange="toggleAlasan(this)">
+                    <option value="tepat_waktu">Tepat Waktu</option>
+                    <option value="pulang_awal">Pulang Awal</option>
+                    <option value="lanjut_shift">Lanjut ke Shift Berikutnya</option>
+                </select>
+            </div>
+            <div class="modal-field" id="fieldAlasan" style="display:none">
+                <label class="modal-label" for="alasanKeluar">Alasan Pulang Awal</label>
+                <textarea class="modal-textarea" id="alasanKeluar" name="alasan_pulang_awal" placeholder="Tuliskan alasan pulang lebih awal..."></textarea>
+            </div>
+            <div class="modal-actions">
+                <button type="button" class="btn-cancel" onclick="closeModal('modalKeluar')">Batal</button>
+                <button type="submit" class="btn-confirm">Konfirmasi Keluar</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+    // Live clock
+    function updateClock() {
+        const now = new Date();
+        const h = String(now.getHours()).padStart(2,'0');
+        const m = String(now.getMinutes()).padStart(2,'0');
+        const s = String(now.getSeconds()).padStart(2,'0');
+        document.getElementById('liveClock').textContent = `${h}:${m}:${s}`;
+    }
+    updateClock();
+    setInterval(updateClock, 1000);
+
+    // Sidebar toggle
+    function toggleSidebar() {
+        document.getElementById('sidebar').classList.toggle('open');
+        document.getElementById('sbOverlay').classList.toggle('open');
+    }
+
+    // Modal helpers
+    function openModalMasuk() {
+        document.getElementById('modalMasuk').classList.add('open');
+    }
+    function openModalKeluar() {
+        document.getElementById('modalKeluar').classList.add('open');
+    }
+    function closeModal(id) {
+        document.getElementById(id).classList.remove('open');
+    }
+
+    // Close modal on overlay click
+    document.querySelectorAll('.modal-overlay').forEach(el => {
+        el.addEventListener('click', function(e) {
+            if (e.target === this) this.classList.remove('open');
+        });
+    });
+
+    // Toggle alasan field
+    function toggleAlasan(sel) {
+        document.getElementById('fieldAlasan').style.display =
+            sel.value === 'pulang_awal' ? 'block' : 'none';
+    }
+</script>
+</body>
 </html>
