@@ -3,15 +3,11 @@ require_once 'config.php';
 require_once 'functions.php';
 requireLogin();
 
-// Pastikan hanya role pamdal/user yang bisa akses
 if (!hasRole(ROLE_USER)) {
     header('Location: dashboard.php');
     exit;
 }
 
-// ----------------------------------------------------------------
-// Fallback: definisikan getActiveShift() jika belum ada
-// ----------------------------------------------------------------
 if (!function_exists('getActiveShift')) {
     function getActiveShift() {
         global $conn;
@@ -32,31 +28,24 @@ if (!function_exists('getActiveShift')) {
     }
 }
 
-// ----------------------------------------------------------------
-// Data user sesi
-// ----------------------------------------------------------------
 $user_id_sesi     = (int)$_SESSION['user_id'];
 $tanggal_hari_ini = date('Y-m-d');
 
-// ----------------------------------------------------------------
-// Cek absensi aktif hari ini (sudah masuk, belum keluar atau sudah keluar)
-// Ambil dari tabel absensi — bukan dari jam server
-// ----------------------------------------------------------------
 $sudah_masuk      = false;
 $sudah_keluar     = false;
 $jam_masuk_db     = '—';
 $jam_keluar_db    = '—';
 $absensi_id_aktif = 0;
 
-// Shift dari absensi user (bukan dari jam server)
 $shift_nama_user    = '—';
 $shift_mulai_user   = '—';
 $shift_selesai_user = '—';
 $shift_id_user      = 0;
-$shift_jam_keluar_raw = null; // untuk validasi absen keluar
+$shift_jam_keluar_raw = null;
 
-// Cari absensi yang jam_masuk sudah terisi hari ini
-// (bisa sudah keluar atau belum)
+// Cek sudah ada laporan atau belum untuk absensi aktif
+$sudah_ada_laporan = false;
+
 $q = $conn->prepare(
     "SELECT a.id, a.jam_masuk, a.jam_keluar, a.shift_id,
             s.nama_shift, s.jam_masuk AS shift_jam_masuk, s.jam_keluar AS shift_jam_keluar
@@ -82,36 +71,22 @@ if ($res && $res->num_rows > 0) {
     $shift_nama_user      = $row_absen['nama_shift'];
     $shift_mulai_user     = substr($row_absen['shift_jam_masuk'],  0, 5);
     $shift_selesai_user   = substr($row_absen['shift_jam_keluar'], 0, 5);
-    $shift_jam_keluar_raw = $row_absen['shift_jam_keluar']; // format H:i:s
+    $shift_jam_keluar_raw = $row_absen['shift_jam_keluar'];
 
     if (!empty($row_absen['jam_keluar'])) {
         $sudah_keluar  = true;
         $jam_keluar_db = date('H:i', strtotime($row_absen['jam_keluar']));
     }
+
+    // Cek apakah sudah ada laporan untuk absensi aktif ini
+    $cek_lap = $conn->prepare("SELECT id FROM laporan WHERE absensi_id = ? LIMIT 1");
+    $cek_lap->bind_param('i', $absensi_id_aktif);
+    $cek_lap->execute();
+    $res_lap = $cek_lap->get_result();
+    $sudah_ada_laporan = ($res_lap && $res_lap->num_rows > 0);
+    $cek_lap->close();
 }
 
-// ----------------------------------------------------------------
-// Cek apakah SEKARANG adalah waktu shift yang user pilih saat masuk.
-// Jika iya → tombol Absen Keluar aktif.
-// Jika belum waktunya → tombol dikunci.
-//
-// Logika: shift user aktif jika jam sekarang berada di dalam
-// rentang jam_masuk s/d jam_keluar shift tersebut.
-// Toleransi: boleh absen keluar kapan saja setelah masuk,
-// KECUALI belum masuk shift itu sama sekali.
-// Aturan bisnis: absen keluar hanya bisa dilakukan pada shift
-// yang SAMA dengan saat absen masuk (sudah ditangani oleh
-// $sudah_masuk — kita hanya perlu pastikan user sudah masuk).
-// ----------------------------------------------------------------
-
-// Shift server (untuk info saja, tidak dipakai untuk kontrol tombol)
-$shift_server_aktif = getActiveShift();
-
-// ----------------------------------------------------------------
-// Validasi: apakah jam sekarang masih dalam rentang shift user?
-// Ini opsional — bisa dipakai untuk menampilkan peringatan.
-// Absen keluar tetap diizinkan selama sudah masuk dan belum keluar.
-// ----------------------------------------------------------------
 $dalam_shift_user = false;
 if ($sudah_masuk && $shift_jam_keluar_raw) {
     $now          = date('H:i:s');
@@ -119,17 +94,12 @@ if ($sudah_masuk && $shift_jam_keluar_raw) {
     $shift_keluar = substr($row_absen['shift_jam_keluar'], 0, 8);
 
     if ($shift_masuk < $shift_keluar) {
-        // Shift normal
         $dalam_shift_user = ($now >= $shift_masuk && $now < $shift_keluar);
     } else {
-        // Shift melewati tengah malam (misal Malam 20:00–07:30)
         $dalam_shift_user = ($now >= $shift_masuk || $now < $shift_keluar);
     }
 }
 
-// ----------------------------------------------------------------
-// URL absen keluar
-// ----------------------------------------------------------------
 $url_keluar = 'absen_keluar.php?absensi_id=' . $absensi_id_aktif;
 $url_lanjut = 'absen_keluar.php?absensi_id=' . $absensi_id_aktif . '&mode=lanjut';
 ?>
@@ -226,30 +196,44 @@ $url_lanjut = 'absen_keluar.php?absensi_id=' . $absensi_id_aktif . '&mode=lanjut
         .absen-card { background: var(--navy-card); border: 1px solid var(--navy-line); border-radius: var(--radius-xl); padding: 28px 24px; text-align: center; text-decoration: none; color: var(--text-primary); display: block; transition: all 0.22s ease; position: relative; overflow: hidden; }
         .absen-card:hover { transform: translateY(-3px); text-decoration: none; color: var(--text-primary); }
 
-        /* Masuk */
         .absen-card.masuk  { border-color: rgba(34,197,94,0.3); }
         .absen-card.masuk:not(.disabled):hover  { background: rgba(34,197,94,0.08); border-color: var(--green); box-shadow: 0 8px 30px rgba(34,197,94,0.12); }
-        /* Keluar */
+        .absen-card.masuk.sudah-masuk { border-color: rgba(59,158,255,0.3); }
+        .absen-card.masuk.sudah-masuk:hover { background: rgba(59,158,255,0.08); border-color: var(--accent); box-shadow: 0 8px 30px rgba(59,158,255,0.12); }
+
         .absen-card.keluar { border-color: rgba(244,63,94,0.3); }
         .absen-card.keluar:not(.disabled):hover { background: rgba(244,63,94,0.08); border-color: var(--red); box-shadow: 0 8px 30px rgba(244,63,94,0.12); }
-        /* Lanjut */
+        .absen-card.keluar.warn-laporan { border-color: rgba(245,158,11,0.5); }
+        .absen-card.keluar.warn-laporan:not(.disabled):hover { background: rgba(245,158,11,0.08); border-color: var(--amber); box-shadow: 0 8px 30px rgba(245,158,11,0.12); }
+
         .absen-card.lanjut { border-color: rgba(167,139,250,0.3); }
         .absen-card.lanjut:not(.disabled):hover { background: rgba(167,139,250,0.08); border-color: var(--purple); box-shadow: 0 8px 30px rgba(167,139,250,0.12); }
 
-        /* Disabled state */
         .absen-card.disabled { opacity: 0.4; cursor: not-allowed; pointer-events: none; }
 
-        /* Icon wrap */
         .absen-icon-wrap { width: 64px; height: 64px; border-radius: 16px; display: flex; align-items: center; justify-content: center; margin: 0 auto 16px; font-size: 26px; }
         .absen-card.masuk  .absen-icon-wrap { background: var(--green-dim);  color: var(--green);  border: 1px solid rgba(34,197,94,0.3); }
+        .absen-card.masuk.sudah-masuk .absen-icon-wrap { background: var(--accent-dim); color: var(--accent); border: 1px solid rgba(59,158,255,0.3); }
         .absen-card.keluar .absen-icon-wrap { background: var(--red-dim);    color: var(--red);    border: 1px solid rgba(244,63,94,0.3); }
+        .absen-card.keluar.warn-laporan .absen-icon-wrap { background: var(--amber-dim); color: var(--amber); border: 1px solid rgba(245,158,11,0.3); }
         .absen-card.lanjut .absen-icon-wrap { background: var(--purple-dim); color: var(--purple); border: 1px solid rgba(167,139,250,0.3); }
 
         .absen-label { font-size: 15px; font-weight: 600; margin-bottom: 6px; }
         .absen-desc  { font-size: 12px; color: var(--text-secondary); line-height: 1.5; }
         .absen-rule  { margin-top: 12px; display: inline-flex; align-items: center; gap: 5px; font-size: 11px; padding: 3px 10px; border-radius: 20px; }
 
-        /* ── INFO BOX (peringatan belum pilih shift) ── */
+        /* Warn badge untuk belum laporan */
+        .warn-badge {
+            display: flex; align-items: center; gap: 6px;
+            margin-top: 10px; padding: 7px 12px;
+            border-radius: 10px;
+            background: var(--amber-dim); border: 1px solid rgba(245,158,11,0.35);
+            color: var(--amber); font-size: 11px; font-weight: 500;
+            line-height: 1.4;
+        }
+        .warn-badge i { flex-shrink: 0; font-size: 13px; }
+
+        /* ── INFO BOX ── */
         .info-box { background: var(--amber-dim); border: 1px solid rgba(245,158,11,0.3); border-radius: var(--radius-lg); padding: 14px 18px; margin-bottom: 16px; display: flex; align-items: flex-start; gap: 12px; font-size: 13px; color: var(--amber); line-height: 1.5; }
         .info-box i { font-size: 16px; margin-top: 1px; flex-shrink: 0; }
 
@@ -301,7 +285,6 @@ $url_lanjut = 'absen_keluar.php?absensi_id=' . $absensi_id_aktif . '&mode=lanjut
             <div class="name">Selamat datang, <?= htmlspecialchars(explode(' ', $_SESSION['name'])[0]) ?>!</div>
             <div class="meta">
                 <?php if ($sudah_masuk): ?>
-                    <!-- Tampilkan shift dari absensi user, bukan dari jam server -->
                     <span class="chip chip-blue">
                         <i class="fas fa-clock" style="font-size:10px;"></i>
                         <?= htmlspecialchars($shift_nama_user) ?>
@@ -311,9 +294,11 @@ $url_lanjut = 'absen_keluar.php?absensi_id=' . $absensi_id_aktif . '&mode=lanjut
                         <span class="chip chip-teal"><i class="fas fa-check-double" style="font-size:10px;"></i> Absensi selesai</span>
                     <?php else: ?>
                         <span class="chip chip-green"><i class="fas fa-check-circle" style="font-size:10px;"></i> Sudah absen masuk</span>
+                        <?php if (!$sudah_ada_laporan): ?>
+                            <span class="chip chip-amber"><i class="fas fa-file-alt" style="font-size:10px;"></i> Belum ada laporan</span>
+                        <?php endif; ?>
                     <?php endif; ?>
                 <?php else: ?>
-                    <!-- Belum pilih shift sama sekali -->
                     <span class="chip chip-muted">
                         <i class="fas fa-moon" style="font-size:10px;"></i>
                         Shift belum dipilih
@@ -330,31 +315,24 @@ $url_lanjut = 'absen_keluar.php?absensi_id=' . $absensi_id_aktif . '&mode=lanjut
 
     <!-- ── STATUS BAR ── -->
     <div class="status-bar">
-
-        <!-- Shift Aktif: hanya terisi jika user SUDAH absen masuk -->
         <div class="stat-card">
             <div class="stat-label">Shift Aktif</div>
             <div class="stat-value <?= $sudah_masuk ? '' : 'na' ?>">
                 <?= $sudah_masuk ? htmlspecialchars($shift_nama_user) : '—' ?>
             </div>
         </div>
-
-        <!-- Absen Masuk -->
         <div class="stat-card">
             <div class="stat-label">Absen Masuk</div>
             <div class="stat-value <?= $sudah_masuk ? 'ok' : 'na' ?>">
                 <?= $jam_masuk_db ?>
             </div>
         </div>
-
-        <!-- Absen Keluar -->
         <div class="stat-card">
             <div class="stat-label">Absen Keluar</div>
             <div class="stat-value <?= $sudah_keluar ? 'ok' : ($sudah_masuk ? 'pending' : 'na') ?>">
                 <?= $jam_keluar_db ?>
             </div>
         </div>
-
     </div>
 
     <!-- ── INFO: belum absen masuk ── -->
@@ -363,8 +341,7 @@ $url_lanjut = 'absen_keluar.php?absensi_id=' . $absensi_id_aktif . '&mode=lanjut
         <i class="fas fa-info-circle"></i>
         <div>
             Anda belum melakukan absen masuk hari ini. Pilih <strong>Absen Masuk</strong> di bawah dan
-            pilih shift Anda (Pagi / Siang / Malam) untuk memulai. Shift Aktif di status bar
-            akan otomatis terisi setelah absen masuk.
+            pilih shift Anda (Pagi / Siang / Malam) untuk memulai.
         </div>
     </div>
     <?php endif; ?>
@@ -373,18 +350,33 @@ $url_lanjut = 'absen_keluar.php?absensi_id=' . $absensi_id_aktif . '&mode=lanjut
     <div class="section-title">Absensi</div>
     <div class="absen-grid">
 
-        <!-- ABSEN MASUK -->
-        <a href="absen_masuk.php" class="absen-card masuk <?= $sudah_masuk ? 'disabled' : '' ?>">
-            <div class="absen-icon-wrap"><i class="fas fa-sign-in-alt"></i></div>
+        <!-- ABSEN MASUK — SELALU BISA DIKLIK -->
+        <a href="absen_masuk.php" class="absen-card masuk <?= $sudah_masuk ? 'sudah-masuk' : '' ?>">
+            <div class="absen-icon-wrap">
+                <i class="fas <?= $sudah_masuk ? 'fa-pen-to-square' : 'fa-sign-in-alt' ?>"></i>
+            </div>
             <div class="absen-label">Absen Masuk</div>
             <div class="absen-desc">
-                Pilih shift (Pagi / Siang / Malam) dan status sesuai atau tidak sesuai jadwal.
-                Jika tidak sesuai, wajib isi data penukar/pengganti.
+                <?php if ($sudah_masuk): ?>
+                    <?php if ($sudah_ada_laporan): ?>
+                        Anda sudah absen masuk. Tap untuk <strong>mengubah laporan</strong> shift ini.
+                    <?php else: ?>
+                        Anda sudah absen masuk. Tap untuk <strong>mengisi laporan</strong> shift ini.
+                    <?php endif; ?>
+                <?php else: ?>
+                    Pilih shift (Pagi / Siang / Malam) dan status sesuai atau tidak sesuai jadwal.
+                <?php endif; ?>
             </div>
             <?php if ($sudah_masuk): ?>
-                <span class="absen-rule chip chip-teal">
-                    <i class="fas fa-check"></i> Sudah diabsen pukul <?= $jam_masuk_db ?>
-                </span>
+                <?php if ($sudah_ada_laporan): ?>
+                    <span class="absen-rule chip chip-blue">
+                        <i class="fas fa-pen"></i> Ubah laporan shift ini
+                    </span>
+                <?php else: ?>
+                    <span class="absen-rule chip chip-amber">
+                        <i class="fas fa-file-alt"></i> Isi laporan shift ini
+                    </span>
+                <?php endif; ?>
             <?php else: ?>
                 <span class="absen-rule chip chip-amber">
                     <i class="fas fa-info-circle"></i> Tap untuk pilih shift &amp; absen masuk
@@ -394,28 +386,27 @@ $url_lanjut = 'absen_keluar.php?absensi_id=' . $absensi_id_aktif . '&mode=lanjut
 
         <!-- ABSEN KELUAR -->
         <?php if ($sudah_masuk && !$sudah_keluar): ?>
-            <!--
-                Absen keluar aktif HANYA jika:
-                1. User sudah absen masuk pada shift tertentu ($sudah_masuk = true)
-                2. User belum absen keluar ($sudah_keluar = false)
-                3. Shift yang dipilih saat masuk adalah shift yang sedang berjalan saat ini
-                   ($dalam_shift_user = true).
-                   Jika di luar rentang shift → tombol dikunci dengan pesan peringatan.
-            -->
             <?php if ($dalam_shift_user): ?>
-                <a href="<?= $url_keluar ?>" class="absen-card keluar">
-                    <div class="absen-icon-wrap"><i class="fas fa-sign-out-alt"></i></div>
+                <a href="<?= $url_keluar ?>" class="absen-card keluar <?= (!$sudah_ada_laporan) ? 'warn-laporan' : '' ?>">
+                    <div class="absen-icon-wrap">
+                        <i class="fas <?= (!$sudah_ada_laporan) ? 'fa-exclamation-triangle' : 'fa-sign-out-alt' ?>"></i>
+                    </div>
                     <div class="absen-label">Absen Keluar</div>
                     <div class="absen-desc">
                         Pilih tepat waktu, pulang lebih awal (wajib isi alasan),
                         atau lanjut shift berikutnya.
                     </div>
-                    <span class="absen-rule chip chip-red">
+                    <?php if (!$sudah_ada_laporan): ?>
+                        <div class="warn-badge">
+                            <i class="fas fa-file-alt"></i>
+                            <span>Anda belum mengisi laporan shift ini. Laporan bisa diisi di halaman Absen Masuk sebelum keluar.</span>
+                        </div>
+                    <?php endif; ?>
+                    <span class="absen-rule <?= (!$sudah_ada_laporan) ? 'chip chip-amber' : 'chip chip-red' ?>">
                         <i class="fas fa-door-open"></i> Tap untuk absen keluar
                     </span>
                 </a>
             <?php else: ?>
-                <!-- Sudah masuk tapi bukan jam shift-nya sekarang (misal shift malam, masih siang) -->
                 <div class="absen-card keluar disabled" style="opacity:.45; cursor:not-allowed; pointer-events:none;">
                     <div class="absen-icon-wrap"><i class="fas fa-sign-out-alt"></i></div>
                     <div class="absen-label">Absen Keluar</div>
@@ -431,7 +422,6 @@ $url_lanjut = 'absen_keluar.php?absensi_id=' . $absensi_id_aktif . '&mode=lanjut
             <?php endif; ?>
 
         <?php elseif ($sudah_masuk && $sudah_keluar): ?>
-            <!-- Sudah selesai -->
             <div class="absen-card keluar disabled">
                 <div class="absen-icon-wrap"><i class="fas fa-sign-out-alt"></i></div>
                 <div class="absen-label">Absen Keluar</div>
@@ -442,7 +432,6 @@ $url_lanjut = 'absen_keluar.php?absensi_id=' . $absensi_id_aktif . '&mode=lanjut
             </div>
 
         <?php else: ?>
-            <!-- Belum masuk sama sekali -->
             <div class="absen-card keluar disabled">
                 <div class="absen-icon-wrap"><i class="fas fa-sign-out-alt"></i></div>
                 <div class="absen-label">Absen Keluar</div>
@@ -455,7 +444,7 @@ $url_lanjut = 'absen_keluar.php?absensi_id=' . $absensi_id_aktif . '&mode=lanjut
 
     </div>
 
-    <!-- ── LANJUT SHIFT: hanya tampil jika sudah masuk, belum keluar, dan masih dalam jam shift ── -->
+    <!-- ── LANJUT SHIFT ── -->
     <?php if ($sudah_masuk && !$sudah_keluar && $dalam_shift_user): ?>
     <div class="lanjut-wrap">
         <a href="<?= $url_lanjut ?>" class="absen-card lanjut"
@@ -478,17 +467,16 @@ $url_lanjut = 'absen_keluar.php?absensi_id=' . $absensi_id_aktif . '&mode=lanjut
     <!-- ── LAPORAN ── -->
     <div class="section-title">Informasi &amp; Laporan</div>
     <div class="menu-grid">
-        <a href="laporan_saya.php" class="menu-card">
+        <a href="laporan_harian.php" class="menu-card">
             <div class="menu-icon-sm i-blue"><i class="fas fa-file-alt"></i></div>
             <div class="menu-lbl">Laporan Saya</div>
             <div class="menu-sub">Riwayat absensi &amp; laporan</div>
         </a>
     </div>
 
-</div><!-- /main -->
+</div>
 
 <script>
-    // Live clock
     function tickClock() {
         const el = document.getElementById('clock');
         if (!el) return;

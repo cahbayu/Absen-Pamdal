@@ -34,15 +34,12 @@ function getShiftById($shift_id) {
 
 /**
  * Cek shift yang sedang aktif berdasarkan waktu sekarang.
- * Mendukung shift yang melewati tengah malam (jam_masuk > jam_keluar),
- * seperti Shift Malam 20:00–07:30.
+ * Mendukung shift yang melewati tengah malam (jam_masuk > jam_keluar).
  */
 function getActiveShift() {
     global $conn;
     $now = date('H:i:s');
 
-    // Ambil semua shift lalu cek satu per satu di PHP
-    // agar logika cross-midnight lebih akurat
     $sql    = "SELECT * FROM shift";
     $result = $conn->query($sql);
     if (!$result || $result->num_rows === 0) return null;
@@ -52,15 +49,10 @@ function getActiveShift() {
         $keluar = $shift['jam_keluar'];
 
         if ($masuk < $keluar) {
-            // Shift normal (tidak melewati tengah malam)
-            // Contoh: Pagi 07:30–11:00, Siang 11:00–20:00
             if ($now >= $masuk && $now < $keluar) {
                 return $shift;
             }
         } else {
-            // Shift melewati tengah malam
-            // Contoh: Malam 20:00–07:30
-            // Aktif jika sekarang >= 20:00 ATAU sekarang < 07:30
             if ($now >= $masuk || $now < $keluar) {
                 return $shift;
             }
@@ -73,10 +65,6 @@ function getActiveShift() {
 /**
  * Cek keterlambatan.
  * Berapapun telatnya, Pamdal TETAP BISA absen masuk.
- * Keterangan akan otomatis menjadi 'terlambat'.
- *
- * @param  string $jam_masuk_shift  Format 'HH:MM:SS'
- * @return array  ['terlambat' => bool, 'menit' => int, 'jam' => int, 'sisa_menit' => int, 'bisa_absen' => bool, 'label' => string]
  */
 function cekKeterlambatan($jam_masuk_shift) {
     $sekarang      = strtotime(date('H:i:s'));
@@ -145,8 +133,6 @@ function getOpsiStatusKeluar($shift_jam_keluar) {
 
 /**
  * Proses absen masuk untuk Pamdal.
- * Berapapun telatnya, absen TETAP BISA dilakukan.
- * Jika terlambat, keterangan_masuk otomatis = 'terlambat'.
  */
 function absenMasuk($user_id, $shift_id, $status_masuk, $data_penukaran = []) {
     global $conn;
@@ -217,6 +203,38 @@ function absenMasuk($user_id, $shift_id, $status_masuk, $data_penukaran = []) {
     }
 
     return ['success' => true, 'message' => $pesan, 'absensi_id' => $absensi_id];
+}
+
+/**
+ * FIX MASALAH 1:
+ * Fungsi absenMasukOtomatis() yang dipanggil di absen_keluar.php saat lanjut_shift.
+ * Fungsi ini membuat record absensi masuk otomatis untuk shift berikutnya.
+ * Implementasi dengan mendelegasikan ke buatAbsensiLanjutShift() yang sudah ada,
+ * namun mengambil shift_id dari absensi aktif terakhir user.
+ */
+function absenMasukOtomatis($user_id) {
+    global $conn;
+    $user_id = (int)$user_id;
+
+    // Cari absensi yang baru saja dikunci sebagai lanjut_shift
+    // (jam_keluar IS NOT NULL, status_keluar = lanjut_shift, terbaru)
+    $sql = "SELECT shift_id, tanggal FROM absensi
+            WHERE user_id = $user_id
+              AND status_keluar = 'lanjut_shift'
+              AND jam_keluar IS NOT NULL
+            ORDER BY id DESC
+            LIMIT 1";
+    $result = $conn->query($sql);
+
+    if (!$result || $result->num_rows === 0) {
+        return ['success' => false, 'message' => 'Tidak ditemukan absensi lanjut shift terbaru.'];
+    }
+
+    $row              = $result->fetch_assoc();
+    $shift_id_sekarang = (int)$row['shift_id'];
+
+    // Delegasikan ke fungsi yang sudah ada
+    return buatAbsensiLanjutShift($user_id, $shift_id_sekarang);
 }
 
 function sudahAbsenMasuk($user_id, $shift_id, $tanggal) {
@@ -308,6 +326,9 @@ function absenKeluar($user_id, $absensi_id, $status_keluar, $alasan = '') {
     }
     $stmt->close();
 
+    // FIX: Untuk lanjut_shift, buatAbsensiLanjutShift sudah menangani pembuatan absensi baru.
+    // absen_keluar.php TIDAK perlu memanggil absenMasukOtomatis() lagi karena fungsi ini
+    // sudah dipanggil di sini. Redirect dilakukan di absen_keluar.php setelah fungsi ini return success.
     if ($status_keluar === 'lanjut_shift') {
         $result_lanjut = buatAbsensiLanjutShift($user_id, $absensi['shift_id']);
         if (!$result_lanjut['success']) {

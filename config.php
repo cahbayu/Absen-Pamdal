@@ -1,6 +1,6 @@
 <?php
 // config.php - Konfigurasi Database dan Security
-
+date_default_timezone_set('Asia/Jakarta');
 // Konfigurasi database
 define('DB_HOST', 'localhost');
 define('DB_USER', 'root');
