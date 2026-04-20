@@ -4,7 +4,7 @@ require_once 'config.php';
 
 // Jika sudah login, redirect ke dashboard
 if (isLoggedIn()) {
-    header("Location: dashboard.php");
+    header("Location: " . getDashboardUrl());
     exit();
 }
 
@@ -39,9 +39,8 @@ if (isset($_POST['login'])) {
                 $update_stmt->bind_param("i", $user['id']);
                 $update_stmt->execute();
                 $update_stmt->close();
-
-                header("Location: dashboard.php");
-                exit();
+                header("Location: " . getDashboardUrl());
+                exit();;
             } else {
                 $error = "Username atau password salah!";
             }
@@ -519,7 +518,7 @@ if (isset($_POST['login'])) {
                         <img src="assets/img/Setjen_DPDRI.png" alt="Logo DPD RI">
                     </div>
                     <div class="brand-sub">Sistem Absensi</div>
-                    <div class="brand-name">PAMDAL</div>
+                    <div class="brand-name">ANDALAN</div>
                     <div class="divider-gold"></div>
                     <p class="brand-desc">
                         Sistem pencatatan kehadiran dan pelaporan harian petugas pengamanan dalam.
@@ -610,7 +609,7 @@ if (isset($_POST['login'])) {
 
                 <div class="info-text">
                     Akun dibuat oleh <strong>Kepala Kantor</strong>.<br>
-                    Hubungi kepala kantor jika tidak bisa masuk.
+                    Jika Lupa Password Hubungi Kepala Kantor.
                 </div>
             </div>
 

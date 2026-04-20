@@ -34,33 +34,29 @@ if (!$absensi_aktif) {
     }
 }
 
-// ── Bangun opsi keluar ─────────────────────────────────────────
-$opsi_keluar_dari_fungsi = [];
-if ($absensi_aktif) {
-    $opsi_keluar_dari_fungsi = getOpsiStatusKeluar($absensi_aktif['shift_jam_keluar']);
-}
-
+// ── Cek status "tepat waktu" berdasarkan aturan baru ─────────
+// Absen keluar normal HANYA tersedia jika sudah ada pamdal baru
+// yang absen masuk di shift berikutnya (serah terima terjadi).
 $tepat_waktu_tersedia = false;
-foreach ($opsi_keluar_dari_fungsi as $o) {
-    if ($o['value'] === 'tepat_waktu') { $tepat_waktu_tersedia = true; break; }
+if ($absensi_aktif) {
+    $tepat_waktu_tersedia = isWaktuPulang(
+        (int)$absensi_aktif['shift_id'],
+        $absensi_aktif['tanggal']
+    );
 }
 $tepat_waktu_terkunci = $absensi_aktif && !$tepat_waktu_tersedia;
 
+// ── Bangun opsi keluar ─────────────────────────────────────────
 $opsi_keluar = [];
 if ($absensi_aktif) {
-    $opsi_keluar[] = ['value' => 'tepat_waktu', 'label' => 'Absen Keluar Normal'];
-    foreach ($opsi_keluar_dari_fungsi as $o) {
-        if ($o['value'] !== 'tepat_waktu') {
-            $opsi_keluar[] = $o;
-        }
-    }
-    $values_ada = array_column($opsi_keluar, 'value');
-    if (!in_array('pulang_awal', $values_ada)) {
+    // Tepat waktu selalu tampil (tapi mungkin terkunci)
+    $opsi_keluar[] = ['value' => 'tepat_waktu',  'label' => 'Absen Keluar Normal'];
+    // Pulang awal: hanya saat belum ada pengganti
+    if ($tepat_waktu_terkunci) {
         $opsi_keluar[] = ['value' => 'pulang_awal', 'label' => 'Pulang Lebih Awal'];
     }
-    if (!in_array('lanjut_shift', $values_ada)) {
-        $opsi_keluar[] = ['value' => 'lanjut_shift', 'label' => 'Lanjut Shift Berikutnya'];
-    }
+    // Lanjut shift selalu ada
+    $opsi_keluar[] = ['value' => 'lanjut_shift', 'label' => 'Lanjut Shift Berikutnya'];
 }
 
 $sudah_keluar = $absensi_aktif && !empty($absensi_aktif['jam_keluar']);
@@ -78,17 +74,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $pesan      = 'Anda sudah melakukan absen keluar pada shift ini.';
         $tipe_pesan = 'warning';
     } elseif ($status_keluar === 'tepat_waktu' && $tepat_waktu_terkunci) {
-        $pesan      = 'Opsi Absen Keluar Normal belum tersedia. Tersedia dalam rentang ±10 menit dari jadwal pulang shift.';
+        $pesan      = 'Absen keluar normal belum bisa dilakukan. Tunggu hingga pamdal shift berikutnya sudah absen masuk sebagai tanda serah terima.';
         $tipe_pesan = 'error';
     } else {
         $result     = absenKeluar($user_id, $absensi_id, $status_keluar, $alasan);
         $pesan      = $result['message'];
         $tipe_pesan = $result['success'] ? 'success' : 'error';
 
-        // ── FIX MASALAH 1:
-        // Tidak perlu memanggil absenMasukOtomatis() di sini karena
-        // buatAbsensiLanjutShift() SUDAH dipanggil di dalam absenKeluar()
-        // di functions.php. Cukup redirect jika berhasil.
         if ($result['success'] && $status_keluar === 'lanjut_shift') {
             header('Location: absen_keluar.php?lanjut=1');
             exit;
@@ -229,6 +221,23 @@ function shiftIcon(string $nama): array {
         .banner-lanjut-text { font-size: 13px; color: var(--purple); line-height: 1.5; }
         .banner-lanjut-text strong { display: block; font-size: 14px; margin-bottom: 2px; }
 
+        /* Banner: menunggu pamdal pengganti */
+        .banner-tunggu {
+            display: flex; align-items: flex-start; gap: 14px;
+            padding: 16px 20px; margin-bottom: 24px;
+            background: var(--amber-dim);
+            border: 1px solid rgba(245,158,11,0.4);
+            border-radius: var(--radius-lg);
+        }
+        .banner-tunggu-icon {
+            width: 40px; height: 40px; border-radius: 10px;
+            background: rgba(245,158,11,0.2);
+            display: flex; align-items: center; justify-content: center;
+            font-size: 16px; color: var(--amber); flex-shrink: 0; margin-top: 2px;
+        }
+        .banner-tunggu-title { font-size: 14px; font-weight: 700; color: var(--amber); }
+        .banner-tunggu-sub   { font-size: 12px; color: rgba(245,158,11,0.8); margin-top: 4px; line-height: 1.6; }
+
         .card {
             background: var(--navy-card); border: 1px solid var(--navy-line);
             border-radius: var(--radius-xl); padding: 26px 28px; margin-bottom: 20px;
@@ -329,14 +338,6 @@ function shiftIcon(string $nama): array {
         .badge-double { background: var(--purple-dim); color: var(--purple); border-color: rgba(167,139,250,0.3); }
         .badge-locked { background: rgba(77,98,120,0.2); color: var(--text-muted); border-color: rgba(77,98,120,0.3); display: flex; align-items: center; gap: 4px; }
 
-        .locked-hint {
-            display: flex; align-items: center; gap: 8px;
-            margin-top: 10px; padding: 10px 14px;
-            background: rgba(77,98,120,0.15); border: 1px dashed rgba(77,98,120,0.4);
-            border-radius: var(--radius-md); font-size: 12px; color: var(--text-muted);
-        }
-        .locked-hint i { color: var(--amber); font-size: 11px; }
-
         .panel-alasan, .panel-lanjut {
             display: none; margin-top: 18px; padding: 18px 20px;
             border-radius: var(--radius-lg); animation: fadeIn .25s ease;
@@ -430,6 +431,20 @@ function shiftIcon(string $nama): array {
         .success-sub   { font-size: 13px; color: var(--text-secondary); }
         .success-redir { font-size: 12px; color: var(--text-muted); margin-top: 20px; }
 
+        /* Auto-refresh indicator */
+        .refresh-badge {
+            display: inline-flex; align-items: center; gap: 6px;
+            font-size: 11px; font-weight: 600; padding: 4px 10px;
+            border-radius: 20px; background: rgba(59,158,255,0.12);
+            color: var(--accent); border: 1px solid rgba(59,158,255,0.25);
+            margin-top: 10px;
+        }
+        .refresh-badge .dot {
+            width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+            animation: pulse 1.5s infinite;
+        }
+        @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:0.3;} }
+
         @media (max-width: 600px) {
             .navbar { padding: 0 16px; }
             .main   { padding: 20px 14px 60px; }
@@ -442,7 +457,7 @@ function shiftIcon(string $nama): array {
 <nav class="navbar">
     <a href="dashboard.php" class="navbar-brand">
         <div class="brand-icon"><i class="fas fa-shield-alt"></i></div>
-        SELARAS
+        ANDALAN
     </a>
     <a href="dashboard.php" class="btn-back">
         <i class="fas fa-arrow-left"></i> Kembali
@@ -550,6 +565,24 @@ function shiftIcon(string $nama): array {
         </div>
     </div>
 
+    <?php if ($tepat_waktu_terkunci): ?>
+    <div class="banner-tunggu">
+        <div class="banner-tunggu-icon"><i class="fas fa-user-clock"></i></div>
+        <div>
+            <div class="banner-tunggu-title">Menunggu Pamdal Pengganti</div>
+            <div class="banner-tunggu-sub">
+                Absen keluar normal baru bisa dilakukan setelah pamdal shift berikutnya
+                sudah melakukan absen masuk sebagai tanda <strong>serah terima pos</strong>.
+                Halaman ini akan otomatis refresh setiap 30 detik.
+                <div class="refresh-badge">
+                    <span class="dot"></span>
+                    Auto-refresh aktif &mdash; <span id="refresh-cd">30</span>s lagi
+                </div>
+            </div>
+        </div>
+    </div>
+    <?php endif; ?>
+
     <?php
         [$sum_icon, $sum_kls] = shiftIcon($absensi_aktif['nama_shift']);
         $jam_masuk_fmt  = date('H:i', strtotime($absensi_aktif['jam_masuk']));
@@ -604,25 +637,25 @@ function shiftIcon(string $nama): array {
                     $is_locked = ($opsi['value'] === 'tepat_waktu' && $tepat_waktu_terkunci);
 
                     if ($opsi['value'] === 'tepat_waktu') {
-                        $cls  = 'ok';
-                        $icon = $is_locked ? 'fa-lock' : 'fa-check-circle';
-                        $icls = $is_locked ? 'i-muted' : 'i-green';
+                        $cls   = 'ok';
+                        $icon  = $is_locked ? 'fa-lock' : 'fa-check-circle';
+                        $icls  = $is_locked ? 'i-muted' : 'i-green';
                         $badge = $is_locked
-                            ? '<span class="opsi-badge badge-locked"><i class="fas fa-lock"></i> TERKUNCI</span>'
-                            : '<span class="opsi-badge badge-ok">TEPAT WAKTU</span>';
+                            ? '<span class="opsi-badge badge-locked"><i class="fas fa-lock"></i> MENUNGGU PENGGANTI</span>'
+                            : '<span class="opsi-badge badge-ok">TERSEDIA</span>';
                         $sub = $is_locked
-                            ? 'Tersedia dalam rentang ±10 menit dari jadwal pulang shift.'
-                            : 'Sesuai jadwal pulang shift Anda.';
+                            ? 'Tersedia setelah pamdal shift berikutnya absen masuk (serah terima).'
+                            : 'Pamdal pengganti sudah absen masuk. Serah terima dapat dilakukan.';
                     } elseif ($opsi['value'] === 'pulang_awal') {
-                        $cls  = 'early';
-                        $icon = 'fa-door-open';
-                        $icls = 'i-amber';
+                        $cls   = 'early';
+                        $icon  = 'fa-door-open';
+                        $icls  = 'i-amber';
                         $badge = '<span class="opsi-badge badge-awal">WAJIB ALASAN</span>';
-                        $sub   = 'Pulang sebelum jadwal — wajib isi alasan.';
+                        $sub   = 'Pulang sebelum ada pengganti — wajib isi alasan.';
                     } else {
-                        $cls  = 'double';
-                        $icon = 'fa-rotate';
-                        $icls = 'i-purple';
+                        $cls   = 'double';
+                        $icon  = 'fa-rotate';
+                        $icls  = 'i-purple';
                         $badge = '<span class="opsi-badge badge-double">DOUBLE SHIFT</span>';
                         $sub   = 'Lanjut ke shift berikutnya tanpa absen masuk ulang.';
                     }
@@ -650,18 +683,6 @@ function shiftIcon(string $nama): array {
                 </div>
                 <?php endforeach; ?>
             </div>
-
-            <?php if ($tepat_waktu_terkunci): ?>
-            <div class="locked-hint">
-                <i class="fas fa-info-circle"></i>
-                <span>
-                    Opsi <strong style="color:var(--green);">Absen Keluar Normal</strong> akan terbuka
-                    dalam rentang ±10 menit dari jadwal pulang
-                    <strong style="color:var(--text-primary);"><?= $jam_keluar_sch ?></strong>.
-                    Refresh halaman ini saat waktunya tiba.
-                </span>
-            </div>
-            <?php endif; ?>
 
             <div class="panel-alasan" id="panel-alasan">
                 <div class="panel-ttl">
@@ -699,8 +720,8 @@ function shiftIcon(string $nama): array {
 
         <p style="text-align:center; font-size:12px; color:var(--text-muted); margin-top:14px;">
             <i class="fas fa-info-circle" style="margin-right:4px;"></i>
-            Opsi <strong style="color:var(--green);">Absen Keluar Normal</strong> hanya tersedia
-            dalam rentang ±10 menit dari jam pulang shift.
+            Opsi <strong style="color:var(--green);">Absen Keluar Normal</strong> tersedia setelah
+            pamdal shift berikutnya sudah melakukan absen masuk (serah terima pos).
         </p>
     </form>
     <?php endif; ?>
@@ -739,6 +760,20 @@ const t = setInterval(() => {
 }, 1000);
 <?php endif; ?>
 
+<?php if ($tepat_waktu_terkunci && $absensi_aktif && $tipe_pesan !== 'success'): ?>
+// Auto-refresh setiap 30 detik untuk cek apakah pamdal pengganti sudah masuk
+let refreshCount = 30;
+const refreshEl = document.getElementById('refresh-cd');
+const refreshTimer = setInterval(() => {
+    refreshCount--;
+    if (refreshEl) refreshEl.textContent = refreshCount;
+    if (refreshCount <= 0) {
+        clearInterval(refreshTimer);
+        location.reload();
+    }
+}, 1000);
+<?php endif; ?>
+
 const panelAlasan = document.getElementById('panel-alasan');
 const panelLanjut = document.getElementById('panel-lanjut');
 const btnSubmit   = document.getElementById('btn-submit');
@@ -771,7 +806,7 @@ function updatePanel() {
         if (tepat_waktu_terkunci) {
             if (btnSubmit) { btnSubmit.className = 'btn-submit red'; btnSubmit.disabled = true; }
             if (btnIcon)   btnIcon.className   = 'fas fa-lock';
-            if (btnText)   btnText.textContent = 'Opsi Belum Tersedia';
+            if (btnText)   btnText.textContent = 'Menunggu Pamdal Pengganti';
         } else {
             if (btnSubmit) { btnSubmit.className = 'btn-submit green'; btnSubmit.disabled = false; }
             if (btnIcon)   btnIcon.className   = 'fas fa-check-circle';
@@ -804,7 +839,7 @@ document.getElementById('form-keluar')?.addEventListener('submit', function(e) {
 
     if (val === 'tepat_waktu' && tepat_waktu_terkunci) {
         e.preventDefault();
-        alert('Opsi Absen Keluar Normal belum tersedia.\nRefresh halaman saat mendekati jadwal pulang shift.');
+        alert('Absen keluar normal belum tersedia.\nTunggu hingga pamdal shift berikutnya sudah absen masuk.');
         return;
     }
 

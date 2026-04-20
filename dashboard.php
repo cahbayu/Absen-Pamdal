@@ -108,7 +108,7 @@ $url_lanjut = 'absen_keluar.php?absensi_id=' . $absensi_id_aktif . '&mode=lanjut
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Dashboard Pamdal — SELARAS</title>
+    <title>Dashboard Pamdal — ANDALAN</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,300&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -264,7 +264,7 @@ $url_lanjut = 'absen_keluar.php?absensi_id=' . $absensi_id_aktif . '&mode=lanjut
 <nav class="navbar">
     <div class="navbar-brand">
         <div class="brand-icon"><i class="fas fa-shield-alt"></i></div>
-        SELARAS
+        ANDALAN
     </div>
     <div class="navbar-right">
         <div class="user-info">

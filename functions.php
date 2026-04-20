@@ -63,6 +63,65 @@ function getActiveShift() {
 }
 
 /**
+ * Ambil data occupancy semua shift untuk tanggal tertentu.
+ * Mengembalikan array [shift_id => ['occupied' => bool, 'user_id' => int|null, 'nama_user' => string|null]]
+ *
+ * 'occupied' = true HANYA jika ada user yang sudah absen masuk DAN BELUM absen keluar
+ * di shift tersebut (jam_keluar IS NULL).
+ * Jika petugas sudah absen keluar, shift kembali kosong dan bisa dipilih oleh pamdal lain.
+ *
+ * Digunakan untuk:
+ *  - Menentukan apakah shift bisa dipilih (locked jika occupied oleh user lain yang masih aktif)
+ *  - Menampilkan badge AKTIF (shift yang sudah ada petugasnya dan belum keluar)
+ */
+function getShiftOccupancy($tanggal, $current_user_id = 0) {
+    global $conn;
+    $tanggal         = $conn->real_escape_string($tanggal);
+    $current_user_id = (int)$current_user_id;
+
+    // Hanya ambil absensi yang BELUM keluar (jam_keluar IS NULL)
+    // Artinya shift masih dijaga / sesi masih aktif
+    $sql = "SELECT a.shift_id, a.user_id, u.name AS nama_user
+            FROM absensi a
+            JOIN users u ON a.user_id = u.id
+            WHERE a.tanggal = '$tanggal'
+              AND a.jam_masuk IS NOT NULL
+              AND a.jam_keluar IS NULL
+            ORDER BY a.id ASC";
+
+    $result = $conn->query($sql);
+    $occupancy = [];
+
+    if ($result && $result->num_rows > 0) {
+        while ($row = $result->fetch_assoc()) {
+            $sid = (int)$row['shift_id'];
+            $uid = (int)$row['user_id'];
+
+            // Jika shift ini belum tercatat atau yang tercatat adalah milik sendiri,
+            // catat. Tapi jika ada user lain yang juga di shift ini, prioritaskan user lain.
+            if (!isset($occupancy[$sid])) {
+                $occupancy[$sid] = [
+                    'occupied'  => true,
+                    'user_id'   => $uid,
+                    'nama_user' => $row['nama_user'],
+                    'is_self'   => ($uid === $current_user_id),
+                ];
+            } elseif ($occupancy[$sid]['is_self'] && $uid !== $current_user_id) {
+                // Ada user lain juga, override dengan user lain
+                $occupancy[$sid] = [
+                    'occupied'  => true,
+                    'user_id'   => $uid,
+                    'nama_user' => $row['nama_user'],
+                    'is_self'   => false,
+                ];
+            }
+        }
+    }
+
+    return $occupancy;
+}
+
+/**
  * Cek keterlambatan.
  * Berapapun telatnya, Pamdal TETAP BISA absen masuk.
  */
@@ -101,28 +160,93 @@ function cekKeterlambatan($jam_masuk_shift) {
     ];
 }
 
-function isWaktuPulang($jam_keluar_shift) {
-    $sekarang      = strtotime(date('H:i:s'));
-    $jadwal_keluar = strtotime($jam_keluar_shift);
-    $selisih_menit = abs($sekarang - $jadwal_keluar) / 60;
-    return $selisih_menit <= 10;
+/**
+ * Cek apakah absen keluar NORMAL bisa dilakukan.
+ *
+ * Aturan baru: absen keluar normal tersedia jika sudah ada pamdal baru
+ * yang absen masuk di shift berikutnya (sebagai penanda serah terima).
+ *
+ * $shift_id_sekarang : ID shift yang sedang berjalan
+ * $tanggal           : tanggal absensi saat ini
+ *
+ * Returns bool
+ */
+function isWaktuPulang($shift_id_sekarang, $tanggal = null) {
+    global $conn;
+
+    if (!$tanggal) $tanggal = date('Y-m-d');
+
+    $shift_id_sekarang = (int)$shift_id_sekarang;
+
+    // Shift berikutnya: urutan melingkar 1→2→3→1
+    $shift_berikutnya_id = ($shift_id_sekarang % 3) + 1;
+
+    // Tanggal untuk shift berikutnya:
+    // Jika shift saat ini adalah shift ke-3 (malam/terakhir), shift berikutnya ada di esok hari
+    $tanggal_berikutnya = ($shift_id_sekarang == 3)
+        ? date('Y-m-d', strtotime($tanggal . ' +1 day'))
+        : $tanggal;
+
+    $tanggal_berikutnya  = $conn->real_escape_string($tanggal_berikutnya);
+
+    // Cek apakah sudah ada pamdal lain yang absen masuk di shift berikutnya
+    $sql = "SELECT id FROM absensi
+            WHERE shift_id = $shift_berikutnya_id
+              AND tanggal   = '$tanggal_berikutnya'
+              AND jam_masuk IS NOT NULL
+            LIMIT 1";
+
+    $result = $conn->query($sql);
+    return ($result && $result->num_rows > 0);
 }
 
-function isPulangAwal($jam_keluar_shift) {
-    $sekarang      = strtotime(date('H:i:s'));
-    $jadwal_keluar = strtotime($jam_keluar_shift);
-    return $sekarang < $jadwal_keluar;
+/**
+ * Cek apakah pamdal pulang lebih awal (sebelum ada pengganti shift berikutnya).
+ * Digunakan untuk menentukan apakah opsi 'pulang_awal' ditawarkan.
+ */
+function isPulangAwal($shift_id_sekarang, $tanggal = null) {
+    // Pulang awal = belum ada pamdal pengganti di shift berikutnya
+    return !isWaktuPulang($shift_id_sekarang, $tanggal);
 }
 
-function getOpsiStatusKeluar($shift_jam_keluar) {
+/**
+ * Bangun daftar opsi status keluar berdasarkan kondisi shift.
+ *
+ * $shift_id_sekarang : ID shift yang sedang berjalan
+ * $tanggal           : tanggal absensi (default hari ini)
+ */
+function getOpsiStatusKeluar($shift_id_sekarang, $tanggal = null) {
+    if (!$tanggal) $tanggal = date('Y-m-d');
+
+    $ada_pengganti = isWaktuPulang($shift_id_sekarang, $tanggal);
+
     $opsi = [];
-    if (isPulangAwal($shift_jam_keluar)) {
-        $opsi[] = ['value' => 'pulang_awal',  'label' => 'Pulang Lebih Awal',        'alasan_required' => true];
+
+    if ($ada_pengganti) {
+        // Sudah ada pamdal baru → bisa keluar normal
+        $opsi[] = [
+            'value'            => 'tepat_waktu',
+            'label'            => 'Absen Keluar Normal',
+            'alasan_required'  => false,
+        ];
     }
-    if (isWaktuPulang($shift_jam_keluar)) {
-        $opsi[] = ['value' => 'tepat_waktu',  'label' => 'Tepat Waktu',              'alasan_required' => false];
+
+    // Pulang awal selalu tersedia (sebelum ada pengganti)
+    if (!$ada_pengganti) {
+        $opsi[] = [
+            'value'            => 'pulang_awal',
+            'label'            => 'Pulang Lebih Awal',
+            'alasan_required'  => true,
+        ];
     }
-    $opsi[]     = ['value' => 'lanjut_shift', 'label' => 'Lanjut Shift Berikutnya', 'alasan_required' => false];
+
+    // Lanjut shift selalu tersedia
+    $opsi[] = [
+        'value'            => 'lanjut_shift',
+        'label'            => 'Lanjut Shift Berikutnya',
+        'alasan_required'  => false,
+    ];
+
     return $opsi;
 }
 
@@ -161,8 +285,21 @@ function absenMasuk($user_id, $shift_id, $status_masuk, $data_penukaran = []) {
     }
 
     $tanggal = date('Y-m-d');
+
+    // Cek apakah user sendiri sudah absen masuk di shift ini hari ini
     if (sudahAbsenMasuk($user_id, $shift_id, $tanggal)) {
         return ['success' => false, 'message' => 'Anda sudah absen masuk pada shift ini hari ini.', 'absensi_id' => null];
+    }
+
+    // Cek apakah shift ini sudah diisi oleh user lain yang MASIH AKTIF (belum keluar)
+    $occupancy = getShiftOccupancy($tanggal, $user_id);
+    if (isset($occupancy[$shift_id]) && !$occupancy[$shift_id]['is_self']) {
+        $nama = $occupancy[$shift_id]['nama_user'] ?? 'petugas lain';
+        return [
+            'success'    => false,
+            'message'    => 'Shift ini masih dijaga oleh ' . $nama . '. Pilih shift lain atau tunggu hingga petugas tersebut absen keluar.',
+            'absensi_id' => null,
+        ];
     }
 
     $shift = getShiftById($shift_id);
@@ -206,18 +343,12 @@ function absenMasuk($user_id, $shift_id, $status_masuk, $data_penukaran = []) {
 }
 
 /**
- * FIX MASALAH 1:
  * Fungsi absenMasukOtomatis() yang dipanggil di absen_keluar.php saat lanjut_shift.
- * Fungsi ini membuat record absensi masuk otomatis untuk shift berikutnya.
- * Implementasi dengan mendelegasikan ke buatAbsensiLanjutShift() yang sudah ada,
- * namun mengambil shift_id dari absensi aktif terakhir user.
  */
 function absenMasukOtomatis($user_id) {
     global $conn;
     $user_id = (int)$user_id;
 
-    // Cari absensi yang baru saja dikunci sebagai lanjut_shift
-    // (jam_keluar IS NOT NULL, status_keluar = lanjut_shift, terbaru)
     $sql = "SELECT shift_id, tanggal FROM absensi
             WHERE user_id = $user_id
               AND status_keluar = 'lanjut_shift'
@@ -230,10 +361,9 @@ function absenMasukOtomatis($user_id) {
         return ['success' => false, 'message' => 'Tidak ditemukan absensi lanjut shift terbaru.'];
     }
 
-    $row              = $result->fetch_assoc();
+    $row               = $result->fetch_assoc();
     $shift_id_sekarang = (int)$row['shift_id'];
 
-    // Delegasikan ke fungsi yang sudah ada
     return buatAbsensiLanjutShift($user_id, $shift_id_sekarang);
 }
 
@@ -302,8 +432,15 @@ function absenKeluar($user_id, $absensi_id, $status_keluar, $alasan = '') {
         return ['success' => false, 'message' => 'Anda sudah melakukan absen keluar pada shift ini.'];
     }
 
-    if ($status_keluar === 'tepat_waktu' && !isWaktuPulang($absensi['shift_jam_keluar'])) {
-        return ['success' => false, 'message' => 'Opsi tepat waktu hanya tersedia saat waktu pulang shift.'];
+    // Validasi: absen keluar normal hanya boleh jika sudah ada pamdal baru di shift berikutnya
+    if ($status_keluar === 'tepat_waktu') {
+        $ada_pengganti = isWaktuPulang((int)$absensi['shift_id'], $absensi['tanggal']);
+        if (!$ada_pengganti) {
+            return [
+                'success' => false,
+                'message' => 'Absen keluar normal belum bisa dilakukan. Tunggu hingga pamdal shift berikutnya sudah absen masuk sebagai tanda serah terima.',
+            ];
+        }
     }
 
     if ($status_keluar === 'pulang_awal' && empty($alasan)) {
@@ -326,9 +463,6 @@ function absenKeluar($user_id, $absensi_id, $status_keluar, $alasan = '') {
     }
     $stmt->close();
 
-    // FIX: Untuk lanjut_shift, buatAbsensiLanjutShift sudah menangani pembuatan absensi baru.
-    // absen_keluar.php TIDAK perlu memanggil absenMasukOtomatis() lagi karena fungsi ini
-    // sudah dipanggil di sini. Redirect dilakukan di absen_keluar.php setelah fungsi ini return success.
     if ($status_keluar === 'lanjut_shift') {
         $result_lanjut = buatAbsensiLanjutShift($user_id, $absensi['shift_id']);
         if (!$result_lanjut['success']) {
@@ -724,7 +858,7 @@ function getStatistikHarian($tanggal = null) {
 
     $stats = [];
     foreach ($queries as $key => $sql) {
-        $result     = $conn->query($sql);
+        $result      = $conn->query($sql);
         $stats[$key] = ($result) ? (int)$result->fetch_assoc()['n'] : 0;
     }
 

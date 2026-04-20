@@ -93,13 +93,15 @@ function requireLogin() {
 }
 
 // Fungsi untuk require role tertentu
-function requireRole($role) {
-    requireLogin();
-    
-    if (!hasAccess($role)) {
-        $_SESSION['error_message'] = "Anda tidak memiliki akses ke halaman ini!";
-        header("Location: dashboard.php");
-        exit();
+function getDashboardUrl() {
+    if (!isLoggedIn()) return 'login.php';
+ 
+    switch ($_SESSION['role']) {
+        case ROLE_SUPER_ADMIN:
+            return 'index.php';
+        case ROLE_USER:
+        default:
+            return 'dashboard.php';
     }
 }
 
